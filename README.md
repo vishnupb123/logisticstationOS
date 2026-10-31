@@ -10,9 +10,9 @@ StationOS models a **fictional** delivery station ("Station NOVA-1") using **syn
 
 This project is not affiliated with, endorsed by, or built on confidential data from any employer or company. It does not integrate with any real operator's systems. Operational terminology (induct, sortation, stow, dispatch, etc.) reflects generic parcel-logistics industry concepts, not a verified replica of any specific organization's proprietary process. See [`docs/SECURITY_AND_GOVERNANCE.md`](docs/SECURITY_AND_GOVERNANCE.md) §"Public repository safety" before contributing real-world data of any kind — don't.
 
-## Current status: Milestones 1–8 complete (foundation + Cycle-1 domain/events + analytics + digital twin + first agent + RL environment + agent/RL decision governance + predictive intelligence)
+## Current status: Milestones 1–9 complete (foundation + Cycle-1 domain/events + analytics + digital twin + first agent + RL environment + agent/RL decision governance + predictive intelligence + governance/reliability)
 
-**The frontend and the rest of the agent roster are not implemented yet** — see [`docs/ENGINEERING_ROADMAP.md`](docs/ENGINEERING_ROADMAP.md) for what's next (Milestone 9: governance and reliability).
+**The frontend and the rest of the agent roster are not implemented yet** — see [`docs/ENGINEERING_ROADMAP.md`](docs/ENGINEERING_ROADMAP.md) for what's next (Milestone 10: operational command centre — not yet scoped, see `HANDOFF.md`).
 
 What runs today:
 - A FastAPI backend (`backend/`) with structured logging, settings, liveness/readiness checks, and connectivity probes for PostgreSQL and DuckDB.
@@ -23,9 +23,10 @@ What runs today:
 - **A SimPy digital twin** (`backend/app/simulation/`): a discrete-event model of Cycle 1 with real resource contention (shared induct/stower capacity, finite per-aisle hampers — jackpot diversion emerges from actual contention, not a probability knob), two scenarios, deterministic/seeded reproducibility, and output that runs through the *same* dbt project as real data (verified, not just asserted).
 - **The Flow Intelligence Agent** (`backend/app/agents/flow_intelligence/`): the first real agent, orchestrated by a custom checkpoint/retry state machine (`backend/app/orchestration/`), backed by a provider-independent `LLMProvider` abstraction (`backend/app/core/llm/` — `OllamaProvider` for true local-first inference, no API key; `FakeLLMProvider` for tests). Produces evidence-category-tagged findings (`observation`/`calculated`/`inferred`/`hypothesis`/`prediction`) — never a bare string, never a `recommendation` (structurally impossible for this agent, not just discouraged). Verified against a real induced jackpot backlog running through the actual pipeline — see `HANDOFF.md`.
 - **An RL environment** (`backend/app/rl/`): a Gymnasium environment wrapping the digital twin for one narrow decision problem (aisle-level stow priority balancing), with hard constraints enforced structurally, two baselines, and a PPO policy — evaluated across multiple seeds and held-out scenarios with an honest result: reward improved, but the metric that actually matters (jackpot backlog) didn't, and the advantage disappeared on the hardest held-out scenario. Full writeup in `docs/RL_ENVIRONMENT_SPEC.md`.
-- **Agent/RL decision governance** (`backend/app/security/`): a policy engine, a (minimal, honestly-labeled) risk-evaluation stub, human approval, and a permanent audit record (`DecisionRecord`) connecting agent evidence and RL-environment-based candidate evaluation — never the trained PPO policy, deliberately, given its honest result above. The "no path lets a recommendation become acted on without approval" requirement is a structural guard in the repository functions, not a convention. See `docs/SECURITY_AND_GOVERNANCE.md` and ADR-0009.
+- **Agent/RL decision governance** (`backend/app/security/`): a policy engine, a (minimal, honestly-labeled) risk-evaluation stub, RBAC-checked human approval (`operator`/`supervisor`/`admin` — `rbac.py`), shadow-mode proposals that can never be approved, and a permanent audit record (`DecisionRecord`, now including who-approved-with-what-role and exact component versions) connecting agent evidence and RL-environment-based candidate evaluation — never the trained PPO policy, deliberately, given its honest result above. The "no path lets a recommendation become acted on without approval" requirement is a structural guard in the repository functions, not a convention. See `docs/SECURITY_AND_GOVERNANCE.md` and ADR-0009.
+- **Minimal local-first tracing** (`backend/app/core/tracing.py`): OpenTelemetry, console-exporter only, no external collector — correlates the multi-step operations inside an agent run or a decision proposal.
 - **Predictive intelligence** (`backend/app/predictive/`): a jackpot-accumulation-risk classifier (logistic regression, two baselines) trained on digital-twin episodes, with temporal (seed-ordered, never-shuffled) train/test validation. A genuinely positive result — 0.857 ROC-AUC on held-out episodes, clearly beating both baselines — but only after catching and removing a feature pair that was really just a clock in disguise (measured correlation -1.0 in the fixed-arrival-schedule scenario, inflating accuracy to a misleading 0.96). Full writeup in `docs/PREDICTIVE_INTELLIGENCE_SPEC.md`.
-- A 131-test pytest suite (pure logic + real-Postgres integration tests, the latter skipping honestly rather than failing when Postgres isn't reachable), and a GitHub Actions CI workflow (lint, migrate, seed + export + `dbt run`/`dbt test`, then pytest — against a real Postgres service container) on every push/PR to `main`.
+- A 154-test pytest suite (pure logic + real-Postgres integration tests, the latter skipping honestly rather than failing when Postgres isn't reachable), and a GitHub Actions CI workflow (lint, migrate, seed + export + `dbt run`/`dbt test`, then pytest — against a real Postgres service container) on every push/PR to `main`.
 
 ## Repository layout
 
@@ -44,7 +45,7 @@ backend/        FastAPI application (modular monolith) — see docs/SYSTEM_ARCHI
     agents/     shared evidence types + the Flow Intelligence Agent
     analytics/  Python-side query interface onto the Milestone 3 DuckDB metrics
     rl/         StowBalancingEnv (Gymnasium) + static/rule-based/fixed-weight baselines + evaluation
-    security/   policy engine, risk stub, decision records, approval/audit (Milestone 7; RBAC is Milestone 9)
+    security/   policy engine, risk stub, decision records, RBAC, approval/audit (Milestones 7 & 9)
     predictive/ jackpot_risk/: dataset, model, evaluation, schemas, predict (Milestone 8)
   tests/
   alembic/      two migrations (Cycle-1 schema, agent_executions), upgrade/downgrade-verified
@@ -187,7 +188,7 @@ Needs the `rl` extra and a running Postgres with migrations applied (`alembic up
 python scripts/run_decision_demo.py
 ```
 
-Proposes a decision (evaluating named candidate priority-interventions via real simulation runs), runs it through the policy engine, attempts — and is refused — to record an outcome before approval, has a human approve a candidate, then runs a fresh simulation to record the observed outcome. Verified reproducible across repeated runs. See `docs/SECURITY_AND_GOVERNANCE.md` and ADR-0009 for the governance pipeline this demonstrates.
+Proposes a decision (evaluating named candidate priority-interventions via real simulation runs), runs it through the policy engine, attempts — and is refused — to record an outcome before approval, has an `OPERATOR` try to approve it (refused — RBAC), has a `SUPERVISOR` approve a candidate, runs a fresh simulation to record the observed outcome, then proposes a shadow-mode decision and shows it can never be approved, even by an `ADMIN`. Verified reproducible across repeated runs. See `docs/SECURITY_AND_GOVERNANCE.md` and ADR-0009 for the governance pipeline this demonstrates.
 
 ### Running the predictive model
 
