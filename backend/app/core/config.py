@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,7 +23,11 @@ class Settings(BaseSettings):
     postgres_host: str = "localhost"
     postgres_port: int = 5432
     postgres_user: str = "stationos"
-    postgres_password: str = "stationos"
+    # SecretStr (Milestone 9 secure-configuration review) — masks the
+    # value out of repr()/str()/logs by default; docs/SECURITY_AND_GOVERNANCE.md
+    # already said "never log a full Settings object," this makes that
+    # true even if something does by accident.
+    postgres_password: SecretStr = SecretStr("stationos")
     postgres_db: str = "stationos"
 
     duckdb_path: str = "../data/analytics/stationos.duckdb"
@@ -38,7 +43,8 @@ class Settings(BaseSettings):
     @property
     def postgres_dsn(self) -> str:
         return (
-            f"postgresql+psycopg://{self.postgres_user}:{self.postgres_password}"
+            f"postgresql+psycopg://{self.postgres_user}:"
+            f"{self.postgres_password.get_secret_value()}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
 
