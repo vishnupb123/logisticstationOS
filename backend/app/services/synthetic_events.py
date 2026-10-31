@@ -20,6 +20,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from app.core.determinism import rng_hex as _rng_hex
+from app.core.determinism import rng_uuid as _rng_uuid
 from app.domain.enums import EventSourceKind, ParcelClassification, SortAttemptOutcome
 from app.events.event_types import (
     PARCEL_CLASSIFIED,
@@ -49,18 +51,6 @@ class SyntheticScenario:
     parcels_per_truck: int = 20
     jackpot_rate: float = 0.08
     exception_rate: float = 0.05
-
-
-def _rng_uuid(rng: random.Random) -> uuid.UUID:
-    """A UUID drawn from the seeded rng rather than the system's random
-    source — the only way generate_cycle1_events can be deterministic
-    given a seed.
-    """
-    return uuid.UUID(int=rng.getrandbits(128), version=4)
-
-
-def _rng_hex(rng: random.Random, n_bytes: int) -> str:
-    return rng.getrandbits(n_bytes * 8).to_bytes(n_bytes, "big").hex().upper()
 
 
 def generate_cycle1_events(scenario: SyntheticScenario) -> list[EventEnvelope]:

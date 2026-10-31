@@ -10,40 +10,13 @@ pure function of what's already here, for no analytical gain.
 """
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
 
-import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.events.models import Event
-
-
-@dataclass(frozen=True)
-class ExportResult:
-    row_count: int
-    out_path: Path
-
-
-# payload is JSONB in Postgres; Parquet has no native JSON type, so it's
-# serialized to a JSON *string* column here — dbt/DuckDB models parse it
-# back out with DuckDB's own JSON functions (json_extract_string, ->>).
-_COLUMNS = (
-    "event_id",
-    "event_type",
-    "entity_type",
-    "entity_id",
-    "correlation_id",
-    "occurred_at",
-    "recorded_at",
-    "source",
-    "source_kind",
-    "provenance",
-    "idempotency_key",
-    "schema_version",
-    "payload",
-)
+from app.events.parquet_io import ExportResult, write_event_records_to_parquet
 
 
 def export_events_to_parquet(session: Session, out_path: Path) -> ExportResult:
@@ -68,29 +41,4 @@ def export_events_to_parquet(session: Session, out_path: Path) -> ExportResult:
         for row in rows
     ]
 
-    frame = pd.DataFrame.from_records(records, columns=_COLUMNS)
-    # Explicit dtypes even for an empty frame, so a from-scratch database
-    # still produces a schema-valid (if zero-row) Parquet file rather than
-    # one dbt's read_parquet can't infer columns from.
-    frame = frame.astype(
-        {
-            "event_id": "string",
-            "event_type": "string",
-            "entity_type": "string",
-            "entity_id": "string",
-            "correlation_id": "string",
-            "source": "string",
-            "source_kind": "string",
-            "provenance": "string",
-            "idempotency_key": "string",
-            "schema_version": "int64",
-            "payload": "string",
-        }
-    )
-    frame["occurred_at"] = pd.to_datetime(frame["occurred_at"], utc=True)
-    frame["recorded_at"] = pd.to_datetime(frame["recorded_at"], utc=True)
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    frame.to_parquet(out_path, engine="pyarrow", index=False)
-
-    return ExportResult(row_count=len(frame), out_path=out_path)
+    return write_event_records_to_parquet(records, out_path)
