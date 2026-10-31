@@ -1,0 +1,28 @@
+version: 2
+
+models:
+  - name: curated_parcel_events
+    description: Parcel-only events with payload fields flattened into typed columns.
+    columns:
+      - name: parcel_id
+        tests: [not_null]
+      - name: sort_outcome
+        tests:
+          - accepted_values:
+              arguments:
+                values: ["sorted", "jackpot"]
+              config:
+                where: "sort_outcome is not null"
+      - name: classification
+        tests:
+          - accepted_values:
+              arguments:
+                values: ["normal_cycle1", "sideline", "high_value", "future_date", "exception"]
+              config:
+                where: "classification is not null"
+
+  - name: curated_parcel_lifecycle
+    description: One row per parcel with key Cycle-1 lifecycle timestamps and attributes.
+    columns:
+      - name: parcel_id
+        tests: [not_null, unique]

@@ -1,0 +1,26 @@
+version: 2
+
+models:
+  - name: raw_events
+    description: >
+      Literal read of the Parquet export of PostgreSQL's events table
+      (docs/DATA_ARCHITECTURE.md § Event schema conventions). A batch
+      export, not a live view — re-run
+      scripts/export_events_to_parquet.py and `dbt run` to refresh it.
+    columns:
+      - name: event_id
+        tests: [not_null, unique]
+      - name: event_type
+        tests: [not_null]
+      - name: entity_type
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["truck", "parcel"]
+      - name: entity_id
+        tests: [not_null]
+      - name: occurred_at
+        tests: [not_null]
+      - name: idempotency_key
+        tests: [not_null, unique]

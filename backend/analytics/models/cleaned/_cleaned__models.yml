@@ -1,0 +1,34 @@
+version: 2
+
+models:
+  - name: cleaned_events
+    description: Typed envelope fields; payload cast to JSON for downstream parsing.
+    columns:
+      - name: event_id
+        tests: [not_null, unique]
+      - name: event_type
+        description: >
+          Must mirror backend/app/events/event_types.py exactly — there
+          is no automated sync between that module and this list yet
+          (tracked in docs/OPEN_QUESTIONS.md); a new event type added to
+          the application without updating this test will fail CI here,
+          which is the point, but update both together.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - "truck.arrived"
+                  - "truck.unloaded"
+                  - "parcel.inducted"
+                  - "parcel.classified"
+                  - "parcel.sort_attempted"
+                  - "parcel.jackpot_cleared"
+                  - "parcel.stowed"
+      - name: occurred_at
+        tests: [not_null]
+      - name: source_kind
+        tests:
+          - accepted_values:
+              arguments:
+                values: ["physical_observation", "system_recorded", "inferred", "simulated"]

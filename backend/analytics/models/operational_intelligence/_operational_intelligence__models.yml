@@ -1,0 +1,31 @@
+version: 2
+
+models:
+  - name: metric_induct_throughput
+    description: "Metric contract: docs/OPERATIONAL_DOMAIN_MODEL.md §4.1 Induct throughput (status: proposed)."
+    columns:
+      - name: parcels_inducted
+        tests: [not_null]
+
+  - name: metric_jackpot_volume
+    description: "Metric contract: docs/OPERATIONAL_DOMAIN_MODEL.md §4.1 Jackpot volume (status: proposed)."
+
+  - name: metric_parcel_dwell_time
+    description: "Metric contract: docs/OPERATIONAL_DOMAIN_MODEL.md §4.1 Parcel dwell time (status: proposed)."
+    columns:
+      - name: parcel_id
+        tests: [not_null, unique]
+      - name: dwell_seconds
+        tests: [not_null]
+
+  - name: metric_stow_throughput
+    description: "Metric contract: docs/OPERATIONAL_DOMAIN_MODEL.md §4.1 Stow throughput (status: proposed)."
+    columns:
+      - name: parcels_stowed
+        tests: [not_null]
+
+  - name: metric_wips
+    description: "Metric contract: docs/OPERATIONAL_DOMAIN_MODEL.md §4.1 WIPS (status: proposed)."
+    columns:
+      - name: wip_count
+        tests: [not_null]

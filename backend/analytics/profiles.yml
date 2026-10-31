@@ -1,0 +1,12 @@
+# Self-contained in the project directory (local-first, ADR-0001) rather
+# than ~/.dbt/profiles.yml — run dbt from this directory, or pass
+# --profiles-dir . explicitly, so no machine-global state is required.
+stationos_analytics:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      # Same file app/db/duckdb.py resolves to by default — dbt and the
+      # backend read/write the one analytical database, not two.
+      path: "{{ env_var('STATIONOS_DUCKDB_PATH', '../../data/analytics/stationos.duckdb') }}"
+      threads: 4

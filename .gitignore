@@ -33,6 +33,12 @@ data/analytics/*
 *.duckdb
 *.parquet
 
+# dbt (backend/analytics/) — generated, not committed
+backend/analytics/target/
+backend/analytics/logs/
+backend/analytics/dbt_packages/
+backend/analytics/.user.yml
+
 # OS / editor
 .DS_Store
 .vscode/

@@ -1,0 +1,32 @@
+name: "stationos_analytics"
+version: "1.0.0"
+config-version: 2
+
+profile: "stationos_analytics"
+
+model-paths: ["models"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+seed-paths: ["seeds"]
+analysis-paths: ["analyses"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# Overridable without editing this file — see docs/DATA_ARCHITECTURE.md.
+# Defaults are relative to this project directory (backend/analytics/).
+vars:
+  events_parquet_path: "{{ env_var('STATIONOS_EVENTS_PARQUET', '../../data/processed/events.parquet') }}"
+
+models:
+  stationos_analytics:
+    raw:
+      +materialized: view
+    cleaned:
+      +materialized: view
+    curated:
+      +materialized: table
+    operational_intelligence:
+      +materialized: table
