@@ -43,13 +43,32 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,analytics]"
 
       - name: Lint
         run: ruff check .
 
       - name: Apply migrations (verifies alembic upgrade head on a fresh DB)
         run: alembic upgrade head
+
+      # Order matters: pytest's own schema fixture drops every table at
+      # session teardown (tests/conftest.py::_schema), which would wipe
+      # this seeded data and leave Alembic's version table stale if it
+      # ran first — see docs/OPEN_QUESTIONS.md. Seed, export, and run dbt
+      # before pytest, not after.
+      - name: Seed synthetic data for the analytics pipeline
+        run: python scripts/generate_synthetic_events.py --seed 42 --trucks 6 --parcels-per-truck 20 --seed-db
+
+      - name: Export events to Parquet
+        run: python scripts/export_events_to_parquet.py --out ../data/processed/events.parquet
+
+      - name: dbt run
+        working-directory: backend/analytics
+        run: dbt run --profiles-dir .
+
+      - name: dbt test
+        working-directory: backend/analytics
+        run: dbt test --profiles-dir .
 
       - name: Test
         run: pytest -q
