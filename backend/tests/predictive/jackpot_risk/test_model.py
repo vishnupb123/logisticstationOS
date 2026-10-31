@@ -2,12 +2,18 @@ import pandas as pd
 import pytest
 from sklearn.exceptions import NotFittedError
 
+from app.core.versioning import validate_version_format
 from app.predictive.jackpot_risk.dataset import FEATURE_COLUMNS
 from app.predictive.jackpot_risk.model import (
+    MODEL_VERSION,
     BaseRatePredictor,
     CurrentBacklogHeuristic,
     LogisticRegressionRiskModel,
 )
+
+
+def test_model_version_follows_the_versioning_convention():
+    validate_version_format(MODEL_VERSION)
 
 
 def _toy_frame(backlogs: list[float]) -> pd.DataFrame:
