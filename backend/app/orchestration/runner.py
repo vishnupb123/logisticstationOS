@@ -20,10 +20,12 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.llm.base import LLMProvider, LLMProviderError
+from app.core.tracing import get_tracer
 from app.orchestration import repository
 from app.orchestration.models import AgentExecution
 
 log = structlog.get_logger(__name__)
+tracer = get_tracer(__name__)
 
 
 @dataclass(frozen=True)
@@ -55,20 +57,25 @@ class AgentExecutor:
     def run[InputT: BaseModel, OutputT: BaseModel](
         self, agent: AgentDefinition[InputT, OutputT], input_data: InputT
     ) -> OutputT:
-        execution = repository.create_execution(
-            self._session,
-            agent_name=agent.name,
-            input_payload=input_data.model_dump(mode="json"),
-        )
-        log.info("agent_execution.started", agent=agent.name, execution_id=str(execution.id))
+        with tracer.start_as_current_span(
+            "agent_execution.run", attributes={"agent.name": agent.name}
+        ) as span:
+            execution = repository.create_execution(
+                self._session,
+                agent_name=agent.name,
+                input_payload=input_data.model_dump(mode="json"),
+            )
+            span.set_attribute("agent.execution_id", str(execution.id))
+            log.info("agent_execution.started", agent=agent.name, execution_id=str(execution.id))
 
-        evidence = agent.gather_evidence(input_data)
-        repository.checkpoint(self._session, execution, evidence)
-        log.info(
-            "agent_execution.checkpointed", agent=agent.name, execution_id=str(execution.id)
-        )
+            with tracer.start_as_current_span("agent_execution.gather_evidence"):
+                evidence = agent.gather_evidence(input_data)
+            repository.checkpoint(self._session, execution, evidence)
+            log.info(
+                "agent_execution.checkpointed", agent=agent.name, execution_id=str(execution.id)
+            )
 
-        return self._interpret_with_retry(agent, input_data, evidence, execution)
+            return self._interpret_with_retry(agent, input_data, evidence, execution)
 
     def resume[InputT: BaseModel, OutputT: BaseModel](
         self,
@@ -81,14 +88,18 @@ class AgentExecutor:
         concrete demonstration that "persistent execution state" is
         actually useful, not just data sitting in a row.
         """
-        execution = repository.get_by_id(self._session, execution_id)
-        if execution is None:
-            raise ValueError(f"no agent execution found for id={execution_id}")
-        if execution.checkpoint is None:
-            raise ValueError(f"execution {execution_id} has no checkpoint to resume from")
+        with tracer.start_as_current_span(
+            "agent_execution.resume",
+            attributes={"agent.name": agent.name, "agent.execution_id": str(execution_id)},
+        ):
+            execution = repository.get_by_id(self._session, execution_id)
+            if execution is None:
+                raise ValueError(f"no agent execution found for id={execution_id}")
+            if execution.checkpoint is None:
+                raise ValueError(f"execution {execution_id} has no checkpoint to resume from")
 
-        log.info("agent_execution.resumed", agent=agent.name, execution_id=str(execution_id))
-        return self._interpret_with_retry(agent, input_data, execution.checkpoint, execution)
+            log.info("agent_execution.resumed", agent=agent.name, execution_id=str(execution_id))
+            return self._interpret_with_retry(agent, input_data, execution.checkpoint, execution)
 
     def _interpret_with_retry[InputT: BaseModel, OutputT: BaseModel](
         self,
@@ -101,18 +112,21 @@ class AgentExecutor:
         total_attempts = agent.max_retries + 1
 
         for attempt in range(1, total_attempts + 1):
-            try:
-                output = agent.interpret(input_data, evidence, self._llm)
-            except LLMProviderError as exc:
-                last_error = exc
-                log.warning(
-                    "agent_execution.attempt_failed",
-                    agent=agent.name,
-                    execution_id=str(execution.id),
-                    attempt=attempt,
-                    error=str(exc),
-                )
-                continue
+            with tracer.start_as_current_span(
+                "agent_execution.interpret_attempt", attributes={"agent.attempt": attempt}
+            ):
+                try:
+                    output = agent.interpret(input_data, evidence, self._llm)
+                except LLMProviderError as exc:
+                    last_error = exc
+                    log.warning(
+                        "agent_execution.attempt_failed",
+                        agent=agent.name,
+                        execution_id=str(execution.id),
+                        attempt=attempt,
+                        error=str(exc),
+                    )
+                    continue
 
             repository.mark_completed(self._session, execution, output.model_dump(mode="json"))
             log.info(

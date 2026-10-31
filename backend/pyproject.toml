@@ -24,6 +24,12 @@ dependencies = [
     # already a transitive dev dependency, but now it's load-bearing
     # production code too.
     "httpx>=0.27,<1.0",
+    # app/core/tracing (Milestone 9) — a ConsoleSpanExporter only, no
+    # external collector; cross-cutting observability like structlog
+    # above, not an optional research tool, so it's a base dependency
+    # rather than an extra.
+    "opentelemetry-api>=1.27,<2.0",
+    "opentelemetry-sdk>=1.27,<2.0",
 ]
 
 [project.optional-dependencies]
