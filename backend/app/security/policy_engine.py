@@ -36,6 +36,24 @@ class CandidateIntervention(BaseModel):
     priority_weights: dict[str, float]
 
 
+class CandidateRecord(BaseModel):
+    """The persisted shape of a candidate's evaluation result —
+    structural validation at the repository boundary (Milestone 9:
+    "data validation") so a malformed candidate dict can never
+    silently enter the permanent audit record. `evaluation` stays a
+    loosely-typed dict (it's `app/rl/evaluation.py`'s own nested
+    per-episode shape) rather than a fully mirrored schema — validating
+    the three fields that matter here catches the realistic failure
+    mode (a caller passing the wrong shape entirely) without
+    duplicating that module's schema a second time.
+    """
+
+    name: str
+    description: str
+    priority_weights: dict[str, float]
+    evaluation: dict
+
+
 class PolicyEngineResult(BaseModel):
     eligible: bool
     violations: list[str]

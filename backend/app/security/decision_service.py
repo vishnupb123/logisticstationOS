@@ -26,6 +26,7 @@ import uuid
 from sqlalchemy.orm import Session
 
 from app.agents.schemas import EvidenceCategory, Finding
+from app.core.tracing import get_tracer
 from app.rl.baselines import FixedWeightPolicy
 from app.rl.env import DEFAULT_DECISION_INTERVAL_SECONDS, DEFAULT_MAX_STEPS, StowBalancingEnv
 from app.rl.evaluation import evaluate_policy
@@ -34,6 +35,8 @@ from app.security.models import DecisionRecord
 from app.security.policy_engine import CandidateIntervention
 from app.simulation.config import load_scenario
 from app.simulation.model import aisle_codes_for
+
+tracer = get_tracer(__name__)
 
 #: Disjoint from scripts/run_rl_evaluation.py's _EVAL_SEEDS (101-105) —
 #: a decision's own candidate evaluation and the Milestone 6 baseline
@@ -149,27 +152,42 @@ def propose_decision(
     scenario_path: str,
     candidates: list[CandidateIntervention],
     eval_seeds: list[int] = DEFAULT_EVAL_SEEDS,
+    shadow: bool = False,
 ) -> DecisionRecord:
     """The full "investigate -> formulate a decision problem -> request
     simulation/policy evaluation -> compare candidates -> explain
     results" pipeline, ending in a DecisionRecord that is always
-    PENDING_APPROVAL — nothing here can mark a decision approved.
+    PENDING_APPROVAL (or SHADOW, if `shadow=True` — Milestone 9: a
+    decision proposed to see what the pipeline *would* recommend,
+    never eligible for approval, e.g. while trying out a new candidate
+    shape before trusting it in the real approval queue) — nothing
+    here can mark a decision approved.
     """
-    candidate_results = evaluate_candidates(scenario_path, candidates, eval_seeds=eval_seeds)
+    with tracer.start_as_current_span(
+        "decision.propose",
+        attributes={
+            "decision.type": decision_type,
+            "decision.candidate_count": len(candidates),
+            "decision.shadow": shadow,
+        },
+    ):
+        candidate_results = evaluate_candidates(scenario_path, candidates, eval_seeds=eval_seeds)
 
-    policy_result = policy_engine.evaluate(decision_type, candidates)
-    risk_result = risk.evaluate_risk(decision_type)
-    explanation = _explain(candidate_results, policy_result)
+        policy_result = policy_engine.evaluate(decision_type, candidates)
+        risk_result = risk.evaluate_risk(decision_type)
+        explanation = _explain(candidate_results, policy_result)
 
-    return repository.create_decision_record(
-        session,
-        decision_type=decision_type,
-        context=context,
-        evidence=[f.model_dump(mode="json") for f in [*evidence, *explanation]],
-        candidates=candidate_results,
-        policy_engine_result=policy_result.model_dump(mode="json"),
-        risk_evaluation=risk_result.model_dump(mode="json"),
-    )
+        return repository.create_decision_record(
+            session,
+            decision_type=decision_type,
+            context=context,
+            evidence=[f.model_dump(mode="json") for f in [*evidence, *explanation]],
+            candidates=candidate_results,
+            policy_engine_result=policy_result.model_dump(mode="json"),
+            risk_evaluation=risk_result.model_dump(mode="json"),
+            component_versions={"policy_engine": policy_engine.POLICY_VERSION},
+            shadow=shadow,
+        )
 
 
 def observe_outcome(
@@ -186,27 +204,30 @@ def observe_outcome(
     makes "no path lets a recommendation become acted on without
     approval" true, not just documented.
     """
-    selected = next(
-        (c for c in record.candidates if c["name"] == record.selected_candidate), None
-    )
-    if selected is None:
-        raise ValueError(
-            f"decision {record.id} has no candidate matching selected_candidate "
-            f"{record.selected_candidate!r}"
+    with tracer.start_as_current_span(
+        "decision.observe_outcome", attributes={"decision.id": str(record.id)}
+    ):
+        selected = next(
+            (c for c in record.candidates if c["name"] == record.selected_candidate), None
         )
+        if selected is None:
+            raise ValueError(
+                f"decision {record.id} has no candidate matching selected_candidate "
+                f"{record.selected_candidate!r}"
+            )
 
-    candidate = CandidateIntervention(
-        name=selected["name"],
-        description=selected["description"],
-        priority_weights=selected["priority_weights"],
-    )
-    config = load_scenario(scenario_path)
-    aisle_codes = aisle_codes_for(config)
-    env = StowBalancingEnv(config)
-    weights = _weights_vector(candidate, aisle_codes)
-    outcome = evaluate_policy(env, FixedWeightPolicy(weights), observe_seeds)
+        candidate = CandidateIntervention(
+            name=selected["name"],
+            description=selected["description"],
+            priority_weights=selected["priority_weights"],
+        )
+        config = load_scenario(scenario_path)
+        aisle_codes = aisle_codes_for(config)
+        env = StowBalancingEnv(config)
+        weights = _weights_vector(candidate, aisle_codes)
+        outcome = evaluate_policy(env, FixedWeightPolicy(weights), observe_seeds)
 
-    return repository.record_observed_outcome(session, record, outcome)
+        return repository.record_observed_outcome(session, record, outcome)
 
 
 def get_decision(session: Session, decision_id: uuid.UUID) -> DecisionRecord | None:

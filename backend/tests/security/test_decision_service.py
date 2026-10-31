@@ -15,7 +15,8 @@ from app.agents.schemas import EvidenceCategory, Finding
 from app.security import decision_service
 from app.security.models import DecisionStatus
 from app.security.policy_engine import CandidateIntervention
-from app.security.repository import get_by_id
+from app.security.rbac import Role
+from app.security.repository import approve_decision, get_by_id
 
 _SCENARIO_PATH = str(
     Path(__file__).resolve().parents[3] / "simulation" / "scenarios" / "rl_stow_balancing.yaml"
@@ -73,12 +74,38 @@ def test_propose_decision_produces_a_pending_record_with_full_pipeline(db_sessio
     assert len(record.candidates) == 2
     assert record.policy_engine_result["eligible"] is True
     assert record.risk_evaluation["blast_radius"] == "simulation_only"
+    assert "policy_engine" in record.component_versions
     # Evidence now includes the original agent finding plus the
     # deterministic calculated/recommendation explanation findings.
     categories = [e["category"] for e in record.evidence]
     assert EvidenceCategory.OBSERVATION.value in categories
     assert EvidenceCategory.CALCULATED.value in categories
     assert EvidenceCategory.RECOMMENDATION.value in categories
+
+
+def test_shadow_proposal_is_created_as_shadow_and_can_never_be_approved(db_session):
+    record = decision_service.propose_decision(
+        db_session,
+        decision_type="aisle_stow_priority",
+        context={"trigger": "trying out a new candidate shape"},
+        evidence=_EVIDENCE,
+        scenario_path=_SCENARIO_PATH,
+        candidates=_CANDIDATES,
+        eval_seeds=_FAST_SEEDS,
+        shadow=True,
+    )
+
+    assert record.status == DecisionStatus.SHADOW.value
+
+    with pytest.raises(ValueError, match="already"):
+        approve_decision(
+            db_session,
+            record,
+            approved_by="demo-admin",
+            approver_role=Role.ADMIN,
+            selected_candidate="favor_first_half",
+            rationale="should never go through",
+        )
 
 
 def test_ineligible_decision_type_produces_no_recommendation(db_session):
@@ -108,12 +135,11 @@ def test_full_lifecycle_propose_approve_observe_outcome(db_session):
         eval_seeds=_FAST_SEEDS,
     )
 
-    from app.security.repository import approve_decision
-
     approved = approve_decision(
         db_session,
         record,
-        approved_by="demo-operator",
+        approved_by="demo-supervisor",
+        approver_role=Role.SUPERVISOR,
         selected_candidate="favor_first_half",
         rationale="lower simulated backlog in the comparison",
     )

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Milestone 7 exit-criteria demonstration: a full decision record
+"""Milestone 7/9 exit-criteria demonstration: a full decision record
 (context -> evidence -> candidates -> simulation/policy evaluation ->
 approval -> outcome) produced and queried end to end
-(docs/ENGINEERING_ROADMAP.md Milestone 7), using real Postgres
-persistence and real digital-twin simulation runs throughout — nothing
+(docs/ENGINEERING_ROADMAP.md Milestone 7), now with RBAC-checked
+approval and shadow-mode support (Milestone 9) — using real Postgres
+persistence and real digital-twin simulation runs throughout, nothing
 in this script is mocked.
 
 The starting "evidence" below is deliberately NOT a fresh agent/dbt
@@ -30,6 +31,7 @@ from app.agents.schemas import EvidenceCategory, Finding
 from app.db.postgres import SessionLocal
 from app.security import decision_service
 from app.security.policy_engine import CandidateIntervention
+from app.security.rbac import RBACError, Role
 from app.security.repository import approve_decision, record_observed_outcome
 
 _SCENARIO_PATH = "../simulation/scenarios/rl_stow_balancing.yaml"
@@ -96,8 +98,12 @@ def _print_record(label: str, record) -> None:
     print("evidence:")
     for e in record.evidence:
         print(f"  [{e['category']}] {e['summary']}")
+    print(f"component_versions: {json.dumps(record.component_versions)}")
     if record.selected_candidate:
-        print(f"selected_candidate: {record.selected_candidate} (by {record.approved_by})")
+        print(
+            f"selected_candidate: {record.selected_candidate} "
+            f"(by {record.approved_by}, role={record.approver_role})"
+        )
         print(f"approval_rationale: {record.approval_rationale}")
     if record.observed_outcome:
         agg = record.observed_outcome["aggregate"]
@@ -131,7 +137,21 @@ def main() -> None:
         except ValueError as exc:
             print(f"   Refused, as required: {exc}")
 
-        print("\n3. A human approves the decision...")
+        print("\n3. An OPERATOR attempts to approve it (RBAC must refuse — not their role)...")
+        try:
+            approve_decision(
+                session,
+                record,
+                approved_by="demo-operator",
+                approver_role=Role.OPERATOR,
+                selected_candidate="favor_first_half",
+                rationale="should never go through",
+            )
+            print("   UNEXPECTED: no error raised — this would be a correctness bug.")
+        except RBACError as exc:
+            print(f"   Refused, as required: {exc}")
+
+        print("\n4. A SUPERVISOR approves the decision...")
         # Deliberately NOT the system's own recommendation (whichever
         # candidate has the lowest simulated backlog) — demonstrating
         # that approval is a real judgment call, not a rubber stamp
@@ -140,7 +160,8 @@ def main() -> None:
         approved = approve_decision(
             session,
             record,
-            approved_by="demo-operator",
+            approved_by="demo-supervisor",
+            approver_role=Role.SUPERVISOR,
             selected_candidate="favor_first_half",
             rationale=(
                 "Overriding the system's own backlog-minimizing recommendation: "
@@ -149,11 +170,35 @@ def main() -> None:
             ),
         )
 
-        print("4. Observing the outcome (a fresh simulation run with the approved weights)...")
+        print("5. Observing the outcome (a fresh simulation run with the approved weights)...")
         outcome_record = decision_service.observe_outcome(
             session, approved, scenario_path=_SCENARIO_PATH
         )
         _print_record("Approved, with observed outcome", outcome_record)
+
+        print("\n6. Proposing a SHADOW-mode decision (never eligible for approval)...")
+        shadow_record = decision_service.propose_decision(
+            session,
+            decision_type="aisle_stow_priority",
+            context={"trigger": "trying out a new candidate shape, informational only"},
+            evidence=_EVIDENCE,
+            scenario_path=_SCENARIO_PATH,
+            candidates=_CANDIDATES,
+            shadow=True,
+        )
+        print(f"   status: {shadow_record.status} (never pending_approval)")
+        try:
+            approve_decision(
+                session,
+                shadow_record,
+                approved_by="demo-admin",
+                approver_role=Role.ADMIN,
+                selected_candidate="favor_first_half",
+                rationale="should never go through, even for an admin",
+            )
+            print("   UNEXPECTED: no error raised — this would be a correctness bug.")
+        except ValueError as exc:
+            print(f"   Refused, as required: {exc}")
 
         session.commit()
         print(f"\nCommitted. Query this decision later by id: {record.id}")

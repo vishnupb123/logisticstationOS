@@ -3,10 +3,19 @@ docs/SECURITY_AND_GOVERNANCE.md's "Decision governance pipeline" —
 context, evidence, candidates, policy-engine result, risk evaluation,
 approval, and observed outcome, all on one row, so the whole pipeline
 for one decision can be queried end to end. Status transitions are
-one-way (pending_approval -> approved/rejected) and enforced by
-app/security/repository.py, not by this model alone — a row's status
-isn't guidance, the repository functions are the only place that are
-allowed to change it.
+one-way (pending_approval -> approved/rejected, or shadow -> nowhere)
+and enforced by app/security/repository.py, not by this model alone —
+a row's status isn't guidance, the repository functions are the only
+place that are allowed to change it.
+
+SHADOW (Milestone 9: "shadow-mode evaluation support, keeping
+recommendations visibly separate from anything executed") is a
+terminal status, not a stepping stone to pending_approval — a decision
+created in shadow mode can never be approved, rejected, or have an
+outcome recorded; `app/security/repository.py`'s existing
+`_require_pending` guard already refuses any status other than
+`pending_approval`, so shadow decisions are excluded automatically,
+with no separate check to maintain.
 """
 
 import uuid
@@ -24,6 +33,7 @@ class DecisionStatus(StrEnum):
     PENDING_APPROVAL = "pending_approval"
     APPROVED = "approved"
     REJECTED = "rejected"
+    SHADOW = "shadow"
 
 
 class DecisionRecord(Base):
@@ -46,10 +56,18 @@ class DecisionRecord(Base):
     policy_engine_result: Mapped[dict] = mapped_column(JSONB)
     # app/security/risk.py::RiskEvaluation, serialized.
     risk_evaluation: Mapped[dict] = mapped_column(JSONB)
+    # Which version of each component (e.g. the policy engine) produced
+    # this record — app/core/versioning.py's convention, stamped at
+    # creation (Milestone 9: "model and policy versioning").
+    component_versions: Mapped[dict] = mapped_column(JSONB, default=dict)
 
     # Set only by approve_decision/reject_decision (app/security/repository.py).
     selected_candidate: Mapped[str | None] = mapped_column(String(128), nullable=True)
     approved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # The app/security/rbac.py::Role the approver claimed and was
+    # checked against (Milestone 9: "role-based access control") — set
+    # alongside approved_by, never on its own.
+    approver_role: Mapped[str | None] = mapped_column(String(32), nullable=True)
     approval_rationale: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
