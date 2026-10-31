@@ -11,6 +11,7 @@ from app import domain  # noqa: F401,E402
 from app.core.config import get_settings
 from app.db.postgres import Base
 from app.events import models as event_models  # noqa: F401,E402
+from app.orchestration import models as orchestration_models  # noqa: F401,E402
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
