@@ -2,7 +2,7 @@
 
 **Purpose of this file**: the persistent, single source of truth for "where StationOS actually stands," written so a new engineering session (human or AI) can continue without this conversation's history. If something here conflicts with a doc in `docs/`, the more detailed doc wins for *content*; this file wins for *current status and what to do next*.
 
-Last updated: 2026-10-31 (Milestone 3 completed this session).
+Last updated: 2026-10-31 (Milestone 4 completed this session).
 
 ---
 
@@ -12,64 +12,69 @@ Last updated: 2026-10-31 (Milestone 3 completed this session).
 |---|---|
 | 1 — Software foundation | ✅ Complete |
 | 2 — Domain model and event infrastructure (Cycle 1 slice) | ✅ Complete |
-| 3 — Data engineering and analytics | ✅ **Complete** (this session) |
-| 4 — Digital twin | Not started — **next** |
-| 5–10 | Not started |
+| 3 — Data engineering and analytics | ✅ Complete |
+| 4 — Digital twin | ✅ **Complete** (this session) |
+| 5 — Agentic AI system | Not started — **next** |
+| 6–10 | Not started |
 
 Full milestone definitions: `docs/ENGINEERING_ROADMAP.md`.
 
-## 2. What was built this session (Milestone 3)
+## 2. What was built this session (Milestone 4)
 
-**Parquet export** (`backend/app/services/parquet_export.py` + `backend/scripts/export_events_to_parquet.py`): exports only the `events` table from PostgreSQL — nothing from `app/domain` — to `data/processed/events.parquet`. Every Milestone 3 metric is derivable from the event log alone, so exporting the projected current-state tables too would be duplicating data for no analytical gain (and would blur the "Parquet is a derived artifact of the event log" principle from ADR-0003). `payload` (JSONB in Postgres) is serialized to a JSON *string* column, since Parquet has no native JSON type — DuckDB parses it back out with `->>`/`json_extract` in the dbt models.
+**Scenario configuration** (`backend/app/simulation/config.py`): YAML loaded into a typed Pydantic `ScenarioConfig` (station layout, truck arrivals, parcel timing/rates, resource levels) — resolves the scenario-config-format open question from the architecture phase. A malformed scenario file fails loudly at load time, not mid-simulation.
 
-**dbt Core project** (`backend/analytics/`, self-contained — `profiles.yml` lives in the project directory, not `~/.dbt/`, consistent with the local-first principle):
-- `models/raw/raw_events.sql` — literal `read_parquet()` of the export.
-- `models/cleaned/cleaned_events.sql` — typed envelope columns, `payload` cast to `JSON`.
-- `models/curated/curated_parcel_events.sql` + `curated_parcel_lifecycle.sql` — payload fields flattened into typed columns; one row per parcel with its key Cycle-1 lifecycle timestamps. This deliberately **restates** (doesn't reuse) `app/services/event_ingestion.py`'s projection logic in SQL — the two serve different consumers (Postgres's current-state rows per write vs. a queryable analytical batch view) and the roadmap's own non-goal ("no dbt model should duplicate application logic without a clear analytical purpose") is about avoiding *pointless* duplication, not all duplication; this one has a purpose.
-- `models/operational_intelligence/` — the five `proposed`-status metrics from `docs/OPERATIONAL_DOMAIN_MODEL.md` §4.1: `metric_wips`, `metric_induct_throughput`, `metric_jackpot_volume`, `metric_parcel_dwell_time`, `metric_stow_throughput`.
-- 30 dbt tests total: `not_null`/`unique`/`accepted_values` generics across every layer, plus four singular tests — `assert_occurred_at_not_after_recorded_at.sql` (timestamp validity), `assert_no_missing_induct_event.sql` (referential integrity — the dbt-layer analogue of the projector's `lifecycle_consistent` flag, reinforced here because an analyst querying DuckDB directly can't see that flag), `assert_no_negative_dwell_time.sql` and `assert_jackpot_volume_non_negative.sql` (metric-contract requirements).
+**The SimPy model** (`backend/app/simulation/model.py`) — the qualitative improvement over Milestone 2's generator: **real resource contention**, not random timestamps. A shared `induct_station` resource, a shared `stower_pool` resource, and per-aisle hampers (plain objects with `level`/`capacity`, not SimPy's `Container` — that blocks on a full `put()`, where the domain needs a non-blocking check-then-decide). Jackpot diversion **emerges from hampers actually being full** when a sort is attempted, not a probability knob. A periodically-replaced `simpy.Event` (`_JackpotSignal`) broadcasts jackpot clearing to every waiting parcel at once, matching "jackpot must be cleared and reintroduced" as one supervisory action rather than per-parcel retries.
 
-**No HTTP endpoint or `app/analytics` Python module was built** — same reasoning Milestone 2 applied to not exposing event ingestion over HTTP: there's no real consumer yet. A developer/analyst queries `data/analytics/stationos.duckdb` directly today.
+**Two required scenarios** (`simulation/scenarios/`): `normal_operations.yaml`, `delayed_inbound_trucks.yaml`. Both deliberately use a 10-aisle, 3-capacity-hamper layout (not the full 122-aisle reference default) — at reference scale, 125 parcels spread uniformly would almost never fill a 40-capacity hamper, so the contention mechanism would be theoretically present but never actually exercised. Verified the two scenarios are meaningfully distinct (later, more compressed truck arrivals), not copies with a different seed.
 
-**`pyproject.toml`**: added an `analytics` extra (`pandas`, `pyarrow`, `dbt-core<2.0`, `dbt-duckdb<2.0`) — not a base runtime dependency, since the API itself never invokes dbt or writes Parquet.
+**Shared determinism helpers** (`backend/app/core/determinism.py`): `rng_uuid`/`rng_hex`, extracted from the Milestone 2 generator (which previously had its own private copies) specifically because getting this wrong once already shipped a real bug (see §4). Both the generator and the twin now import from one place.
 
-**CI** (`.github/workflows/ci.yml`): added seed → export → `dbt run` → `dbt test` steps, **before** the `pytest` step, not after — ordering is load-bearing here (see §4).
+**Output path** (`backend/app/simulation/export.py` + `backend/app/events/parquet_io.py`, the latter also extracted from `app/services/parquet_export.py` so both Milestone 3's PostgreSQL export and Milestone 4's simulation output share one Parquet-writing implementation): simulated events are the exact same `EventEnvelope` objects the real pipeline uses, tagged `source_kind = SIMULATED` on every event, written **straight to Parquet — never through PostgreSQL/EventStore**. This is a real architectural decision, not a default fallen into — recorded as a dated amendment to ADR-0006. Rationale: a simulation run isn't "operational truth" (ADR-0002); comparability with real data is achieved at the schema/dbt level, not by mixing simulated rows into the operational database.
 
-## 3. Verification performed (not claimed without running)
+**CLI**: `backend/scripts/run_simulation.py` — runs a scenario, writes Parquet + a `.manifest.json` (scenario, seed, SimPy version, run id, generated-at — docs/DIGITAL_TWIN_SPEC.md's reproducibility requirements).
 
-- Ran the exact CI sequence locally, in order, from a genuinely clean slate (fresh Postgres container + volume, fresh DuckDB file, fresh dbt `target/`): `ruff check` → `alembic upgrade head` → seed 6 trucks/20 parcels → export to Parquet → `dbt run` (9 models, all `OK`) → `dbt test` (30/30 `PASS`) → `pytest` (33/33 `passed`).
-- Inspected the exported Parquet file's schema directly with DuckDB before building anything on top of it (confirmed JSON payload parsing works via `payload::JSON->>'outcome'`).
-- Sanity-checked actual computed metric values, not just "the query ran": with 150 synthetic parcels (6 trucks × 25 parcels, a separate manual run) — 143 `normal_cycle1` parcels, all stowed; 2 `high_value`, 4 `exception`, 1 `future_date`, all correctly unstowed; jackpot cumulative diverts (10) exactly matched cumulative clears (10), `currently_in_jackpot = 0`; dwell times all positive, ranging 305–2348 seconds; `metric_wips = 0` for this closed batch (see §4 for why that's correct, not a bug).
-- Fixed a real deprecation warning (`accepted_values` test arguments needing to be nested under an `arguments:` key in dbt 1.12) by actually reading dbt's output and fixing the schema files, not suppressing or ignoring the warning.
+**Dependency changes**: `simpy`, `pyyaml`, `pandas`, `pyarrow` promoted to base dependencies in `backend/pyproject.toml` (previously `pandas`/`pyarrow` were in the `analytics` extra) — `app/simulation` and `app/events/parquet_io.py` are core application modules, not a side tool, unlike dbt (which stays in the `analytics` extra, genuinely a separate CLI tool).
 
-## 4. A finding worth understanding, not a bug: WIPS reads 0
+**16 new tests** (`backend/tests/simulation/`): config loading/validation, determinism (same seed → byte-identical output including `event_id`), conservation (every simulated parcel ends in a terminal state, verified via the *real* `event_ingestion.project_parcel` function — not a twin-specific reimplementation of the check), forced jackpot contention, the two shipped scenarios actually differing, Parquet round-trip, run-manifest content.
 
-`metric_wips` — "parcels inducted but not yet stowed" — reads `0` against the full synthetic-generator output. This is **correct**, not broken: the generator always carries every `normal_cycle1` parcel through to `stowed` by the time it finishes (there's no "the batch ended mid-process" scenario in a complete, closed synthetic run). WIPS is only ever non-zero against a dataset that captures a station *mid-operation* — a partial event stream, or a live/incremental export taken while parcels are still in flight. This is now documented explicitly in the metric's contract (`docs/OPERATIONAL_DOMAIN_MODEL.md` §4.1) and in the model's own SQL comment, specifically so a future session doesn't mistake `0` for a bug and "fix" it into something wrong.
+## 3. A real design mistake caught and fixed before it shipped
+
+While writing `model.py`, I initially copied Milestone 2's per-event-type `source_kind` pattern (`PHYSICAL_OBSERVATION` for scan-like events, `SYSTEM_RECORDED` for bookkeeping events) directly into the twin. That's wrong for a simulation: **every** event the twin produces is simulated — none of them represent a real physical observation or a real system's bookkeeping. Caught this by re-reading the module's own docstring (which already correctly said "tagged `source_kind=SIMULATED`") against the code I'd actually written, which didn't match it. Fixed by removing `source_kind` as a per-call parameter entirely and hardcoding `EventSourceKind.SIMULATED` inside `_Context.emit()` — structurally impossible to get wrong at a call site now, not just corrected this once. Verified via `test_export.py::test_parquet_round_trips...` asserting `frame["source_kind"].eq("simulated").all()`, and by direct DuckDB inspection after running the actual dbt pipeline against simulated output (`SELECT DISTINCT source_kind FROM cleaned_events` → exactly `simulated`, nothing else).
+
+## 4. Verification performed (not claimed without running)
+
+- Ran `ruff check .` clean across all new/modified code.
+- Ran the full 49-test backend suite (33 from Milestones 2–3 + 16 new) against a live Postgres — all passed; confirmed the determinism refactor (`app/core/determinism.py`) didn't change the Milestone 2 generator's behavior (its own 5 tests still pass unchanged).
+- Ran both shipped scenarios directly (not just via pytest): inspected actual event counts and type breakdowns, confirmed internal consistency by hand (e.g., `sort_attempted(sorted) count == stowed count`; `jackpot occurrences == jackpot_cleared count`), confirmed every event validates against the real production Pydantic schemas (`app.events.schemas.validate_payload`), confirmed zero inconsistent/non-terminal parcels via the real projector.
+- **The headline verification**: ran the *unmodified* `backend/analytics/` dbt project (same `dbt_project.yml`, same models, same tests) against simulated Parquet output instead of real synthetic-generator output, by pointing `STATIONOS_EVENTS_PARQUET`/`STATIONOS_DUCKDB_PATH` at different files — got the same 9 models built and all 30 tests passing. This is the literal, verified truth of the roadmap's exit criteria ("simulated and real data are comparable through the same pipeline"), not an assertion resting on the two formats merely looking similar on paper.
+- Checked computed metrics against simulated data for sanity: `metric_wips = 0` (consistent with Milestone 3's documented finding — a closed run always reads 0), jackpot diverts exactly matched clears, dwell times short but positive (the twin's timing config is deliberately fast for test purposes, not meant to replicate real durations).
 
 ## 5. Known limitations
 
-- Parquet export is a full overwrite of one file, run manually/on-demand — no incrementality, no partitioning, no scheduler. Fine at this data volume; revisit if/when it isn't (tracked as a non-goal explicitly, not a forgotten gap).
-- `backend/analytics/models/cleaned/_cleaned__models.yml`'s `accepted_values` test for `event_type` is a literal list that must be kept in sync by hand with `backend/app/events/event_types.py` — new open question, `docs/OPEN_QUESTIONS.md`.
-- The tests-vs-dev-database isolation gap from Milestone 2 is unchanged; CI works around it by ordering (seed/export/dbt before pytest), which is a real, working mitigation but not the actual fix (a separate test database — still not built).
-- No schema-conformance or freshness data-quality checks yet (see `docs/DATA_ARCHITECTURE.md` §"Data quality" for why: nothing to check `schema_version` conformance against with only one version per event type, and no live consumer yet for whom staleness would matter).
+- Cycle 2 (Pick & Stage, dispatch waves, routes, vans, returns) is not simulated — same Cycle-1-only scope as Milestone 2, by design.
+- The high-value/sideline/future-date/exception cage workflow is not simulated — a non-`normal_cycle1` classification stops the simulated parcel at `pending_exception`, mirroring the (also-unmodeled) application-layer boundary.
+- Only 2 of the 10 catalogued scenarios are built (`docs/DIGITAL_TWIN_SPEC.md` §"Scenario catalog" now states which config fields already support each of the other 8 without new code, and which would need a new config field).
+- Induct scanning and classification are combined into one resource/decision point rather than physically separate stations — a deliberate simplification, not an oversight.
+- `app/simulation` has no priority queueing (`simpy.PriorityResource`) — not needed by either shipped scenario.
+- The tests-vs-dev-database isolation gap from Milestone 2 is unchanged and doesn't affect this milestone (the twin never touches Postgres at all).
 
 ## 6. Open questions
 
-Full register: `docs/OPEN_QUESTIONS.md`. New this session: the dbt/`event_types.py` manual-sync gap (above). Unchanged and still highest-priority: scenario/simulation-config file format (blocks Milestone 4), which LLM provider backs `LLMProvider` (blocks Milestone 5), metric formulas still `requires_validation` for the organization-specific metrics.
+Full register: `docs/OPEN_QUESTIONS.md`. Resolved this session: scenario-config-format (YAML + Pydantic). Updated: the station-profile question now notes `ScenarioConfig.station_layout` as the de facto answer, with a reusable "profile" abstraction still not built since nothing needs a second layout yet. Unchanged and highest-priority for what's ahead: which LLM provider backs `LLMProvider` (blocks Milestone 5), metric formulas still `requires_validation` for the organization-specific metrics, the dbt/`event_types.py` manual-sync gap.
 
 ## 7. Security considerations
 
-No change to governance stance. The `analytics` extra's new dependencies (`dbt-core`, `dbt-duckdb`, `pandas`, `pyarrow`) were checked against what they actually need — none require network access or credentials beyond the already-configured Postgres/DuckDB connections, and dbt's `profiles.yml` here contains no credentials (DuckDB is a local file, not a server with auth).
+No change to governance stance. The twin produces no real data and never touches PostgreSQL, so there's no new surface for real/simulated data to be confused in the operational store — that's structural (ADR-0006's amendment), not a discipline to maintain by convention.
 
 ## 8. Recommended next milestone
 
-**Milestone 4 — Digital twin** (`docs/ENGINEERING_ROADMAP.md`): a SimPy discrete-event model of Cycle 1 (induct → sortation → stow), starting with the "normal operations" and "delayed inbound trucks" scenarios, with reproducible (seeded) runs and output structured to match this milestone's analytical table shape so simulated and real data are comparable through the same pipeline. Digital-twin "calibration" can only mean internal consistency (conservation of parcels, sane queueing behavior) — there is no real operational data to validate against, by design.
+**Milestone 5 — Agentic AI system** (`docs/ENGINEERING_ROADMAP.md`): the orchestration state machine (ADR-0005), the `LLMProvider` abstraction (ADR-0008) with at least one real provider adapter, and the Flow Intelligence Agent (narrowest-scoped, since Cycle 1 data exists from Milestones 2–4) with its full contract — typed input/output, explicit tool permissions, persistent state, checkpointing, retry/timeout, execution tracing, evaluation tests — producing evidence-category-tagged output (`observation | calculated | inferred | hypothesis | prediction | recommendation`).
 
 ## 9. Exact instructions for the next session
 
-1. Read this file, then `docs/ENGINEERING_ROADMAP.md` Milestone 4, then `docs/DIGITAL_TWIN_SPEC.md` and ADR-0006.
-2. Confirm Milestones 1–3 still work before building on them: `cd backend && pip install -e ".[dev,analytics]" && ruff check .`; then bring up Postgres (`docker compose up -d postgres`, remember the 5433 remap), `alembic upgrade head`, `python scripts/generate_synthetic_events.py --seed 42 --seed-db`, `python scripts/export_events_to_parquet.py --out ../data/processed/events.parquet`, `cd analytics && dbt run --profiles-dir . && dbt test --profiles-dir .`, then `cd .. && pytest -q` — in that order (seed/export/dbt before pytest, see §5).
-3. The digital twin is new Python, likely under `backend/app/simulation/` (currently empty) plus a top-level `simulation/` directory for scenario definitions — check both existing empty dirs before deciding where code vs. config belongs.
-4. Simulation output should be structured to match what the Milestone 3 analytics pipeline already consumes (the `events` table's shape, or something compatible with it) — so simulated and real data stay comparable through one pipeline, not two parallel ones. Worth deciding deliberately whether simulated events flow through the *same* `EventStore`/Parquet-export path (tagged `source_kind = simulated`) or a separate one; lean toward the same path given `source_kind` exists precisely to make that safe.
-5. Resolve or make progress on the scenario-config file format open question (`docs/OPEN_QUESTIONS.md`) early — it blocks real implementation start.
-6. When Milestone 4 is done: update this file's status table and date, run the full verification sequence from step 2 one more time and report the actual result, and update `docs/OPEN_QUESTIONS.md` for anything resolved or newly found.
+1. Read this file, then `docs/ENGINEERING_ROADMAP.md` Milestone 5, then `docs/AGENTIC_ARCHITECTURE.md` and ADR-0005/ADR-0008.
+2. Confirm Milestones 1–4 still work: `cd backend && pip install -e ".[dev,analytics]" && ruff check .`; bring up Postgres, `alembic upgrade head`, run `pytest -q` (49 tests, DB-dependent ones skip if Postgres isn't up); run both scenarios via `scripts/run_simulation.py` and confirm they still produce sane output.
+3. Milestone 5's first concrete decision is which LLM provider implements `LLMProvider` for real (`docs/OPEN_QUESTIONS.md`) — this blocks everything else in the milestone and should be resolved or explicitly raised early, not discovered mid-implementation.
+4. The Flow Intelligence Agent's evidence should be able to cite the Milestone 3 analytics pipeline's metrics and/or the Milestone 4 twin's scenario comparisons — check both are queryable (via DuckDB directly, since there's still no API layer onto either) before assuming what evidence is actually available to ground the agent's output in.
+5. Respect the evidence-category scheme from the start (`docs/AGENTIC_ARCHITECTURE.md`) — this is a structural requirement (typed output, not prose convention), not something to retrofit after a first working version.
+6. When Milestone 5 is done: update this file's status table and date, run the full verification sequence from step 2 one more time and report the actual result, and update `docs/OPEN_QUESTIONS.md` for anything resolved or newly found.

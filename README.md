@@ -10,9 +10,9 @@ StationOS models a **fictional** delivery station ("Station NOVA-1") using **syn
 
 This project is not affiliated with, endorsed by, or built on confidential data from any employer or company. It does not integrate with any real operator's systems. Operational terminology (induct, sortation, stow, dispatch, etc.) reflects generic parcel-logistics industry concepts, not a verified replica of any specific organization's proprietary process. See [`docs/SECURITY_AND_GOVERNANCE.md`](docs/SECURITY_AND_GOVERNANCE.md) §"Public repository safety" before contributing real-world data of any kind — don't.
 
-## Current status: Milestones 1–3 complete (foundation + Cycle-1 domain/events + analytics)
+## Current status: Milestones 1–4 complete (foundation + Cycle-1 domain/events + analytics + digital twin)
 
-**The product's digital twin, agents, RL, and frontend are not implemented yet** — see [`docs/ENGINEERING_ROADMAP.md`](docs/ENGINEERING_ROADMAP.md) for what's next (Milestone 4: digital twin).
+**The product's agents, RL, and frontend are not implemented yet** — see [`docs/ENGINEERING_ROADMAP.md`](docs/ENGINEERING_ROADMAP.md) for what's next (Milestone 5: agentic AI system).
 
 What runs today:
 - A FastAPI backend (`backend/`) with structured logging, settings, liveness/readiness checks, and connectivity probes for PostgreSQL and DuckDB.
@@ -20,7 +20,8 @@ What runs today:
 - **Cycle 1 domain model and event infrastructure** (truck → induct → sort → stow only — Pick & Stage/dispatch and the high-value/exception cage workflows aren't modeled yet): typed, idempotent event ingestion into a single append-only `events` table, with current parcel/truck state rebuilt by replaying each entity's event history — order-independent and duplicate-safe by construction, not just by convention. One Alembic migration, upgrade/downgrade-verified.
 - A deterministic, seeded synthetic event generator and CLI: `python scripts/generate_synthetic_events.py --seed 42 --seed-db` (see [`HANDOFF.md`](HANDOFF.md) for exact usage and a known local-dev gotcha around running it against the same database as the test suite).
 - **A dbt Core analytics pipeline** (`backend/analytics/`): Parquet export of the event log → layered dbt models (raw/cleaned/curated/operational_intelligence) against DuckDB → five computed, queryable metrics (WIPS, induct throughput, jackpot volume, parcel dwell time, stow throughput — `docs/OPERATIONAL_DOMAIN_MODEL.md` §4.1), backed by 30 dbt tests.
-- A 33-test pytest suite (pure logic + real-Postgres integration tests, the latter skipping honestly rather than failing when Postgres isn't reachable), and a GitHub Actions CI workflow (lint, migrate, seed + export + `dbt run`/`dbt test`, then pytest — against a real Postgres service container) on every push/PR to `main`.
+- **A SimPy digital twin** (`backend/app/simulation/`): a discrete-event model of Cycle 1 with real resource contention (shared induct/stower capacity, finite per-aisle hampers — jackpot diversion emerges from actual contention, not a probability knob), two scenarios (`simulation/scenarios/normal_operations.yaml`, `delayed_inbound_trucks.yaml`), deterministic/seeded reproducibility, and output that runs through the *same* dbt project as real data (verified, not just asserted).
+- A 49-test pytest suite (pure logic + real-Postgres integration tests, the latter skipping honestly rather than failing when Postgres isn't reachable), and a GitHub Actions CI workflow (lint, migrate, seed + export + `dbt run`/`dbt test`, then pytest — against a real Postgres service container) on every push/PR to `main`.
 
 ## Repository layout
 
@@ -28,28 +29,28 @@ What runs today:
 backend/        FastAPI application (modular monolith) — see docs/SYSTEM_ARCHITECTURE.md
   app/
     api/        HTTP routes
-    core/       settings, logging
+    core/       settings, logging, deterministic-RNG helpers (determinism.py)
     db/         PostgreSQL + DuckDB connection management
     domain/     domain entities — Station, Truck, Aisle, Hamper, Stower, Bag, Parcel (Cycle 1 only)
-    events/     event envelope/payload schemas, the events table, EventStore (append-only, idempotent)
+    events/     event envelope/payload schemas, the events table, EventStore, shared Parquet writer
     repositories/  typed lookups for trucks/parcels/aisles/stowers/bags
-    services/   reference-data seeding, the event projector, the synthetic event generator
+    services/   reference-data seeding, the event projector, the synthetic event generator, Parquet export
+    simulation/ the digital twin — scenario config loading, the SimPy model, Parquet export
     orchestration/  agent orchestration / workflow state (empty — Milestone 5)
     agents/     specialised AI agents (empty — Milestone 5)
     rl/         reinforcement learning environment & training (empty — Milestone 6)
-    simulation/ digital twin (empty — Milestone 4)
     analytics/  Python-side query interface onto DuckDB (still empty — no consumer needs it yet; the actual analytics live in backend/analytics/, the dbt project)
     security/   governance, RBAC, audit (empty — Milestones 7 & 9)
   tests/
   alembic/      one migration (Cycle-1 schema), upgrade/downgrade-verified
-  scripts/      generate_synthetic_events.py, export_events_to_parquet.py
+  scripts/      generate_synthetic_events.py, export_events_to_parquet.py, run_simulation.py
   analytics/    dbt Core project — raw/cleaned/curated/operational_intelligence models, 30 tests
 data/           raw / processed / synthetic / analytics data (gitignored contents)
 docs/           architecture, domain model, specs, ADRs — start here
 frontend/       React/TypeScript command-centre UI (not started)
 infra/          Docker / Docker Compose / CI definitions (not started)
 ml/             RL training artifacts (not started)
-simulation/     SimPy digital-twin scenarios (not started)
+simulation/     digital-twin scenario YAML files — normal_operations.yaml, delayed_inbound_trucks.yaml
 scripts/        repo-level developer/operational scripts (empty — distinct from backend/scripts/)
 ```
 
@@ -119,6 +120,24 @@ dbt test --profiles-dir .
 ```
 
 Then query `data/analytics/stationos.duckdb` directly (`duckdb data/analytics/stationos.duckdb` or via Python's `duckdb` package) — there's no API endpoint for these metrics yet; see `docs/DATA_ARCHITECTURE.md` for why.
+
+### Running the digital twin
+
+No database needed — the twin never touches PostgreSQL (see ADR-0006's amendment for why). From `backend/`:
+
+```bash
+python scripts/run_simulation.py --scenario ../simulation/scenarios/normal_operations.yaml \
+    --out ../data/processed/simulated_events.parquet
+```
+
+Writes the Parquet file plus a `.manifest.json` (scenario, seed, SimPy version, run id). To run it through the same analytics pipeline as real data, point dbt at it instead of the real export:
+
+```bash
+cd analytics
+STATIONOS_EVENTS_PARQUET=../../data/processed/simulated_events.parquet \
+STATIONOS_DUCKDB_PATH=/tmp/stationos_sim.duckdb \
+dbt run --profiles-dir . && dbt test --profiles-dir .
+```
 
 ## License
 
