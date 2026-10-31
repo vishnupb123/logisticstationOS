@@ -4,7 +4,7 @@ Instructions for AI coding assistants (Claude Code and others) working in this r
 
 ## What this project is
 
-StationOS is a local-first logistics operations intelligence platform. Milestones 1–2 (software foundation; Cycle-1 domain model and event infrastructure) are complete; Milestone 3 (data engineering and analytics) is next. Full context: `docs/PRODUCT_VISION.md`, `docs/OPERATIONAL_DOMAIN_MODEL.md`, `docs/SYSTEM_ARCHITECTURE.md`, `docs/ENGINEERING_ROADMAP.md`, and `docs/adr/`.
+StationOS is a local-first logistics operations intelligence platform. Milestones 1–3 (software foundation; Cycle-1 domain model and event infrastructure; data engineering and analytics) are complete; Milestone 4 (digital twin) is next. Full context: `docs/PRODUCT_VISION.md`, `docs/OPERATIONAL_DOMAIN_MODEL.md`, `docs/SYSTEM_ARCHITECTURE.md`, `docs/ENGINEERING_ROADMAP.md`, and `docs/adr/`.
 
 ## Hard rules
 
@@ -26,7 +26,10 @@ StationOS is a local-first logistics operations intelligence platform. Milestone
 - **Evidence labeling**: anything an agent emits must be tagged as one of `observation | calculated | inferred | hypothesis | prediction | recommendation` per `docs/AGENTIC_ARCHITECTURE.md`. Never present an inference or prediction as an observed fact.
 - **ADRs**: a significant, hard-to-reverse architectural decision gets a new file in `docs/adr/` (format: `NNNN-title.md`, copy the structure of an existing one) before — not after — it's implemented. A roadmap-detail refinement or an implementation choice within an already-accepted ADR doesn't need a new one — update the existing doc/ADR with a dated note instead (see ADR-0007's amendment for the pattern).
 - **Don't mock the database in tests that are supposed to verify persistence.** DB-dependent tests use the real `db_session` fixture (`tests/conftest.py`) and skip (via `pytest.skip`, not xfail) when Postgres isn't reachable — never substitute a mock for the thing actually being tested (constraint enforcement, idempotency, ordering).
-- **Tests and local manual dev currently share one Postgres instance** — running `scripts/generate_synthetic_events.py --seed-db` and then `pytest` against the same database can leave Alembic's version table stale (tracked in `docs/OPEN_QUESTIONS.md`). If `alembic upgrade head` silently no-ops against a database that's missing its tables, that's why — drop `alembic_version` and re-run it, don't assume the migration is broken.
+- **Tests and local manual dev currently share one Postgres instance** — running `scripts/generate_synthetic_events.py --seed-db` and then `pytest` against the same database can leave Alembic's version table stale (tracked in `docs/OPEN_QUESTIONS.md`). If `alembic upgrade head` silently no-ops against a database that's missing its tables, that's why — drop `alembic_version` and re-run it, don't assume the migration is broken. In CI, this is why the seed/export/dbt steps run *before* pytest, not after.
+- **The dbt project (`backend/analytics/`) is a separate tool, run separately.** It's not installed as a base dependency (`pyproject.toml`'s `analytics` extra) and not invoked by the FastAPI app. Don't add a `subprocess` call to `dbt` from application code, and don't add `dbt-core`/`dbt-duckdb`/`pandas`/`pyarrow` to the base `dependencies` list — the API doesn't need them to run.
+- **A new event type needs its dbt test list updated too.** `backend/analytics/models/cleaned/_cleaned__models.yml`'s `accepted_values` test on `event_type` is a literal list that must mirror `backend/app/events/event_types.py` by hand (tracked in `docs/OPEN_QUESTIONS.md`) — add both together, not just the Python side.
+- **A new dbt model needs a clear analytical purpose, not just plausibility.** `docs/ENGINEERING_ROADMAP.md`'s Milestone 3 non-goal is explicit: no dbt model should duplicate application logic (e.g. the event-ingestion projector) without a reason beyond "it could be useful."
 
 ## Before implementing a new area of the system
 
@@ -45,8 +48,12 @@ alembic upgrade head   # apply migrations (needed once per fresh database)
 uvicorn app.main:app --reload   # run the API locally
 python scripts/generate_synthetic_events.py --seed 42 --seed-db   # seed reference data + a sample stream
 
+# analytics pipeline (needs the `analytics` extra: pip install -e ".[dev,analytics]")
+python scripts/export_events_to_parquet.py --out ../data/processed/events.parquet
+cd analytics && dbt run --profiles-dir . && dbt test --profiles-dir .
+
 # or, from the repo root, the full stack:
 docker compose up -d
 ```
 
-CI (`.github/workflows/ci.yml`) runs `ruff check` and `pytest` against a real Postgres service container on every push/PR to `main` — run both locally before pushing, don't rely on CI to catch it first. After any code change, actually run the tests and report what happened; don't report a change as done on the basis that it "should work."
+CI (`.github/workflows/ci.yml`) runs lint, `alembic upgrade head`, seed + export + `dbt run`/`dbt test`, then `pytest` — in that order (pytest last, because its own schema teardown would otherwise wipe the seeded data the dbt steps need) — against a real Postgres service container on every push/PR to `main`. Run the same sequence locally before pushing, don't rely on CI to catch it first. After any code change, actually run the tests and report what happened; don't report a change as done on the basis that it "should work."

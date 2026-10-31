@@ -2,7 +2,7 @@
 
 **Purpose of this file**: the persistent, single source of truth for "where StationOS actually stands," written so a new engineering session (human or AI) can continue without this conversation's history. If something here conflicts with a doc in `docs/`, the more detailed doc wins for *content*; this file wins for *current status and what to do next*.
 
-Last updated: 2026-10-31 (Milestone 2 completed this session).
+Last updated: 2026-10-31 (Milestone 3 completed this session).
 
 ---
 
@@ -11,83 +11,65 @@ Last updated: 2026-10-31 (Milestone 2 completed this session).
 | Milestone | Status |
 |---|---|
 | 1 — Software foundation | ✅ Complete |
-| 2 — Domain model and event infrastructure (Cycle 1 slice) | ✅ **Complete** (this session) |
-| 3 — Data engineering and analytics | Not started — **next** |
-| 4–10 | Not started |
+| 2 — Domain model and event infrastructure (Cycle 1 slice) | ✅ Complete |
+| 3 — Data engineering and analytics | ✅ **Complete** (this session) |
+| 4 — Digital twin | Not started — **next** |
+| 5–10 | Not started |
 
 Full milestone definitions: `docs/ENGINEERING_ROADMAP.md`.
 
-## 2. What was true before this session
+## 2. What was built this session (Milestone 3)
 
-Milestone 1 was complete and committed (4 commits: backend skeleton, Docker Compose, CI, docs reconciliation). No domain model, no events, no migrations beyond the empty `alembic/versions/` directory. `backend/app/domain/`, `app/repositories/`, `app/services/` existed only as empty placeholders.
+**Parquet export** (`backend/app/services/parquet_export.py` + `backend/scripts/export_events_to_parquet.py`): exports only the `events` table from PostgreSQL — nothing from `app/domain` — to `data/processed/events.parquet`. Every Milestone 3 metric is derivable from the event log alone, so exporting the projected current-state tables too would be duplicating data for no analytical gain (and would blur the "Parquet is a derived artifact of the event log" principle from ADR-0003). `payload` (JSONB in Postgres) is serialized to a JSON *string* column, since Parquet has no native JSON type — DuckDB parses it back out with `->>`/`json_extract` in the dbt models.
 
-## 3. What was built this session (Milestone 2)
+**dbt Core project** (`backend/analytics/`, self-contained — `profiles.yml` lives in the project directory, not `~/.dbt/`, consistent with the local-first principle):
+- `models/raw/raw_events.sql` — literal `read_parquet()` of the export.
+- `models/cleaned/cleaned_events.sql` — typed envelope columns, `payload` cast to `JSON`.
+- `models/curated/curated_parcel_events.sql` + `curated_parcel_lifecycle.sql` — payload fields flattened into typed columns; one row per parcel with its key Cycle-1 lifecycle timestamps. This deliberately **restates** (doesn't reuse) `app/services/event_ingestion.py`'s projection logic in SQL — the two serve different consumers (Postgres's current-state rows per write vs. a queryable analytical batch view) and the roadmap's own non-goal ("no dbt model should duplicate application logic without a clear analytical purpose") is about avoiding *pointless* duplication, not all duplication; this one has a purpose.
+- `models/operational_intelligence/` — the five `proposed`-status metrics from `docs/OPERATIONAL_DOMAIN_MODEL.md` §4.1: `metric_wips`, `metric_induct_throughput`, `metric_jackpot_volume`, `metric_parcel_dwell_time`, `metric_stow_throughput`.
+- 30 dbt tests total: `not_null`/`unique`/`accepted_values` generics across every layer, plus four singular tests — `assert_occurred_at_not_after_recorded_at.sql` (timestamp validity), `assert_no_missing_induct_event.sql` (referential integrity — the dbt-layer analogue of the projector's `lifecycle_consistent` flag, reinforced here because an analyst querying DuckDB directly can't see that flag), `assert_no_negative_dwell_time.sql` and `assert_jackpot_volume_non_negative.sql` (metric-contract requirements).
 
-Scoped deliberately to **Cycle 1 only** (truck → induct → sort → stow), per the roadmap's own non-goal boundary — Pick & Stage/dispatch/routes/waves/vans/returns and the high-value/sideline/future-date/exception cage workflows are **not** modeled. A parcel classified as anything other than `normal_cycle1` simply stops at a `pending_exception` state; that's a scope boundary, not a bug.
+**No HTTP endpoint or `app/analytics` Python module was built** — same reasoning Milestone 2 applied to not exposing event ingestion over HTTP: there's no real consumer yet. A developer/analyst queries `data/analytics/stationos.duckdb` directly today.
 
-**Domain model** (`backend/app/domain/`): `Station`, `Truck`, `Aisle`, `Hamper`, `Stower`, `Bag`, `Parcel` — SQLAlchemy 2.0 declarative models. `classification`/`lifecycle_state`/`status` are stored as plain strings (validated at the application layer via `app/domain/enums.py` `StrEnum` classes), not Postgres `ENUM` types, so adding a new value later doesn't need an `ALTER TYPE` migration.
+**`pyproject.toml`**: added an `analytics` extra (`pandas`, `pyarrow`, `dbt-core<2.0`, `dbt-duckdb<2.0`) — not a base runtime dependency, since the API itself never invokes dbt or writes Parquet.
 
-**Event infrastructure** (`backend/app/events/`, new package — not in the original module list, added as the concrete home for Layer 2's event ingestion/storage, alongside `app/db`):
-- `schemas.py` — the `EventEnvelope` (common fields: `event_id`, `event_type`, `entity_type`, `entity_id`, `correlation_id`, `occurred_at`, `source`, `source_kind`, `provenance`, `schema_version`, `idempotency_key`, `payload`) and seven per-event-type Pydantic payload schemas (`truck.arrived`, `truck.unloaded`, `parcel.inducted`, `parcel.classified`, `parcel.sort_attempted`, `parcel.jackpot_cleared`, `parcel.stowed`), registered in `EVENT_PAYLOAD_SCHEMAS` keyed by `(event_type, schema_version)`.
-- `models.py` — a single append-only `events` table (one table, not one per event type — resolves the "exact event-ingestion mechanism" open question from the architecture phase).
-- `store.py` — `EventStore`: `append()` uses `INSERT ... ON CONFLICT DO NOTHING` against a real unique constraint on `idempotency_key` (database-enforced idempotency, not just application discipline); `list_for_entity()` orders by `(occurred_at, recorded_at)`.
+**CI** (`.github/workflows/ci.yml`): added seed → export → `dbt run` → `dbt test` steps, **before** the `pytest` step, not after — ordering is load-bearing here (see §4).
 
-**Projection** (`backend/app/services/event_ingestion.py`): current parcel/truck state is **rebuilt from scratch by replaying the entity's full event history, in `occurred_at` order, every time a new event arrives for it** — not updated incrementally. This is what makes projection provably order-independent and idempotent: tested by shuffling the same event set ten different ways and asserting identical final state, and by replaying the same events twice and asserting the state is unchanged (duplicates are flagged, not double-counted). An event whose predecessor state doesn't match (missing induct, stow-without-sort, a second conflicting sort) is **still persisted and still projected from** — the projector trusts the latest real signal for state but sets `lifecycle_consistent = False` with a human-readable note. This is the literal implementation of "don't assume virtual state matches physical state."
+## 3. Verification performed (not claimed without running)
 
-**Repositories** (`backend/app/repositories/`): typed lookups for trucks, parcels, aisles (by code), stowers/bags (get-or-create by code).
+- Ran the exact CI sequence locally, in order, from a genuinely clean slate (fresh Postgres container + volume, fresh DuckDB file, fresh dbt `target/`): `ruff check` → `alembic upgrade head` → seed 6 trucks/20 parcels → export to Parquet → `dbt run` (9 models, all `OK`) → `dbt test` (30/30 `PASS`) → `pytest` (33/33 `passed`).
+- Inspected the exported Parquet file's schema directly with DuckDB before building anything on top of it (confirmed JSON payload parsing works via `payload::JSON->>'outcome'`).
+- Sanity-checked actual computed metric values, not just "the query ran": with 150 synthetic parcels (6 trucks × 25 parcels, a separate manual run) — 143 `normal_cycle1` parcels, all stowed; 2 `high_value`, 4 `exception`, 1 `future_date`, all correctly unstowed; jackpot cumulative diverts (10) exactly matched cumulative clears (10), `currently_in_jackpot = 0`; dwell times all positive, ranging 305–2348 seconds; `metric_wips = 0` for this closed batch (see §4 for why that's correct, not a bug).
+- Fixed a real deprecation warning (`accepted_values` test arguments needing to be nested under an `arguments:` key in dbt 1.12) by actually reading dbt's output and fixing the schema files, not suppressing or ignoring the warning.
 
-**Reference-data seeding** (`backend/app/services/seed.py`): idempotent `seed_station()` / `seed_aisles()` — 122 aisles (A1–A54, B1–B68, the synthetic reference defaults), each with one hamper.
+## 4. A finding worth understanding, not a bug: WIPS reads 0
 
-**Synthetic generator** (`backend/app/services/synthetic_events.py` + `backend/scripts/generate_synthetic_events.py`): deterministic given a seed — **every** random draw, including entity UUIDs and each event's own `event_id` (which Pydantic would otherwise fill from the unseeded global `uuid.uuid4()`), comes from one seeded `random.Random` instance. This was a real bug caught by the determinism test, not a theoretical concern — see §6.
+`metric_wips` — "parcels inducted but not yet stowed" — reads `0` against the full synthetic-generator output. This is **correct**, not broken: the generator always carries every `normal_cycle1` parcel through to `stowed` by the time it finishes (there's no "the batch ended mid-process" scenario in a complete, closed synthetic run). WIPS is only ever non-zero against a dataset that captures a station *mid-operation* — a partial event stream, or a live/incremental export taken while parcels are still in flight. This is now documented explicitly in the metric's contract (`docs/OPERATIONAL_DOMAIN_MODEL.md` §4.1) and in the model's own SQL comment, specifically so a future session doesn't mistake `0` for a bug and "fix" it into something wrong.
 
-**Migration**: `backend/alembic/versions/e3e6c2908dde_cycle_1_domain_and_event_model.py`, autogenerated (after fixing `alembic/env.py`, which claimed models "register themselves by being imported" but nothing actually imported them — also a real bug, fixed). Verified both `upgrade head` and `downgrade base` against a live Postgres.
+## 5. Known limitations
 
-**Tests**: 33 total, in `backend/tests/{events,services}/`. Pure logic (projector, generator, payload schemas — no DB) vs. integration (real Postgres via a new `db_session` fixture in `conftest.py`, skipping honestly via `pytest.skip` when Postgres isn't reachable, never mocked). All pass against a live Postgres; the 8 DB-dependent tests skip cleanly (not fail) when Postgres is down — verified both ways.
+- Parquet export is a full overwrite of one file, run manually/on-demand — no incrementality, no partitioning, no scheduler. Fine at this data volume; revisit if/when it isn't (tracked as a non-goal explicitly, not a forgotten gap).
+- `backend/analytics/models/cleaned/_cleaned__models.yml`'s `accepted_values` test for `event_type` is a literal list that must be kept in sync by hand with `backend/app/events/event_types.py` — new open question, `docs/OPEN_QUESTIONS.md`.
+- The tests-vs-dev-database isolation gap from Milestone 2 is unchanged; CI works around it by ordering (seed/export/dbt before pytest), which is a real, working mitigation but not the actual fix (a separate test database — still not built).
+- No schema-conformance or freshness data-quality checks yet (see `docs/DATA_ARCHITECTURE.md` §"Data quality" for why: nothing to check `schema_version` conformance against with only one version per event type, and no live consumer yet for whom staleness would matter).
 
-**CI**: added an `alembic upgrade head` step before `pytest`, so CI now verifies the migration applies cleanly to a fresh database on every run.
+## 6. Open questions
 
-## 4. Real bugs found and fixed this session (not just "wrote code, assumed it worked")
+Full register: `docs/OPEN_QUESTIONS.md`. New this session: the dbt/`event_types.py` manual-sync gap (above). Unchanged and still highest-priority: scenario/simulation-config file format (blocks Milestone 4), which LLM provider backs `LLMProvider` (blocks Milestone 5), metric formulas still `requires_validation` for the organization-specific metrics.
 
-1. **Non-deterministic "deterministic" generator**: `SyntheticScenario`/`generate_cycle1_events` claimed determinism from a seed, but every UUID (`truck_id`, `parcel_id`, and every `EventEnvelope.event_id`) was drawn from the global, unseeded `uuid.uuid4()`. Caught by `test_same_seed_produces_identical_output` actually failing. Fixed by threading the seeded `rng` through every helper and generating UUIDs via `uuid.UUID(int=rng.getrandbits(128), version=4)`.
-2. **A Pydantic cross-field validator that never ran**: `ParcelSortAttemptedPayload`'s `aisle_code`-required-when-sorted rule was a `@field_validator("aisle_code")`, which Pydantic v2 does not invoke when a field is omitted and falls back to its default (`validate_default=True` would be needed) — so a payload missing `aisle_code` entirely sailed through unvalidated. Caught by two tests failing with "DID NOT RAISE". Fixed by switching to a `@model_validator(mode="after")`, which always runs.
-3. **Alembic silently not registering models**: `alembic/env.py`'s own comment claimed "models register themselves by being imported," but nothing imported `app.domain` or `app.events.models` — the first autogenerate would have produced an empty migration. Fixed before it caused a real problem, by actually running autogenerate and checking its output rather than trusting the comment.
-4. **Local-dev footgun, documented not silently worked around**: running the CLI seeding script and then `pytest` against the same Postgres instance leaves Alembic's `alembic_version` table out of sync with reality (pytest's schema fixture does `Base.metadata.create_all`/`drop_all` directly, bypassing Alembic entirely). Hit this personally mid-session; the fix for *this session* was dropping `alembic_version` and re-running `upgrade head`; the real fix (a separate test database) is tracked as an open question, not built yet.
-5. **Tests that asserted table-wide row counts, not their own**: `test_full_cycle1_stream_ingests_idempotently_and_projects_correctly` asserted `len(db_session.query(Truck).all()) == scenario.truck_count` — which only held by accident, because the table happened to be empty when first written. Final verification deliberately re-created that condition: seeded unrelated, *committed* dev data via the CLI script (bypassing the test's own rolled-back transaction entirely), then re-ran the suite — it failed exactly as it should have (5 trucks found, 2 expected). Fixed by scoping every assertion to the entity ids the test itself generated, and re-verified green with the committed noise data still present in the table, not just after clearing it. This is the same root cause as #4 (DB-dependent tests sharing state with manual dev work) but a different, more fundamental fix: tests should never assume a shared table starts empty, regardless of whether the database is eventually split from dev's.
+## 7. Security considerations
 
-## 5. Verification performed (not claimed without running)
+No change to governance stance. The `analytics` extra's new dependencies (`dbt-core`, `dbt-duckdb`, `pandas`, `pyarrow`) were checked against what they actually need — none require network access or credentials beyond the already-configured Postgres/DuckDB connections, and dbt's `profiles.yml` here contains no credentials (DuckDB is a local file, not a server with auth).
 
-- `ruff check .` — clean, across all new and generated (migration) code.
-- `pytest -q` — 33 passed against a live Postgres; 25 passed / 8 skipped with Postgres stopped (confirmed the skip path is honest, not a silent pass).
-- `alembic upgrade head` then `alembic downgrade base` then `alembic upgrade head` again — all clean, against a real database, via Docker Compose's Postgres (remapped to host port 5433 per Milestone 1's note).
-- Ran `backend/scripts/generate_synthetic_events.py --seed 42 --seed-db` for real (not just its underlying functions via tests): generated 126 events for 3 trucks × 10 parcels, seeded 122 aisles, ingested with 0 errors; re-ran the identical command and confirmed all 126 events reported as duplicates (true idempotent replay, via the actual CLI entry point, not just the service layer in isolation); queried Postgres directly and confirmed row counts matched expectations (3 trucks all `unloaded`, 30 parcels all `stowed`, 122 aisles).
+## 8. Recommended next milestone
 
-## 6. Known limitations
+**Milestone 4 — Digital twin** (`docs/ENGINEERING_ROADMAP.md`): a SimPy discrete-event model of Cycle 1 (induct → sortation → stow), starting with the "normal operations" and "delayed inbound trucks" scenarios, with reproducible (seeded) runs and output structured to match this milestone's analytical table shape so simulated and real data are comparable through the same pipeline. Digital-twin "calibration" can only mean internal consistency (conservation of parcels, sane queueing behavior) — there is no real operational data to validate against, by design.
 
-- Tests and local manual dev share one Postgres database/volume — see §4.4 and `docs/OPEN_QUESTIONS.md`. Low urgency (one developer, one machine) but real.
-- No HTTP endpoint for event ingestion yet — everything is a direct Python service call, used today only by the generator script. Deferred until there's an actual consumer that needs one (the frontend is Milestone 10; an agent needing to write back is Milestone 5+).
-- The high-value/sideline/future-date/exception cage workflows are unmodeled by design (see §3) — a classified-but-not-`normal_cycle1` parcel's event stream just stops; this is not a reconciliation gap to "fix," it's out of this milestone's scope.
-- `classification`/`lifecycle_state`/`status` as plain strings (not Postgres `ENUM`) trades DB-level constraint strictness for migration flexibility — a typo'd string value would currently only be caught by the Python-level `StrEnum`, not by the database itself.
+## 9. Exact instructions for the next session
 
-## 7. Open questions
-
-Full register: `docs/OPEN_QUESTIONS.md`. Changed this session:
-- **Resolved**: "exact event-ingestion mechanism" → single append-only `events` table + replay-based projector, implemented.
-- **New**: tests-vs-dev-database isolation gap (see §4.4/§6).
-- Still open and highest-priority for what's ahead: scenario/simulation-config file format (blocks Milestone 4), which LLM provider backs `LLMProvider` (blocks Milestone 5), metric formulas still `requires_validation` (blocks parts of Milestone 3).
-
-## 8. Security considerations
-
-No change to governance stance or public-repo-safety posture. New code reviewed before commit: no secrets, no real data — the synthetic generator is the only data producer and is explicitly seeded/fictional. `source_kind` (physical_observation/system_recorded/inferred/simulated) is now a real field on every event, not just a documented intention, which matters for the project's evidence-discipline principle once agents start consuming this data in Milestone 5.
-
-## 9. Recommended next milestone
-
-**Milestone 3 — Data engineering and analytics** (`docs/ENGINEERING_ROADMAP.md`): Parquet export of the Milestone 2 event log, a layered dbt Core project (raw → cleaned → curated → operational intelligence) against DuckDB, dbt tests (nulls, uniqueness, referential integrity, valid event types, timestamp validity, metric-contract requirements), and the `proposed`-status metrics (WIPS, induct throughput, jackpot volume, dwell time, stow throughput) computed and queryable end to end. The organization-specific metrics (DEA, OTD, Sort Compliance, FPY, FSAF, Timely Staged, Route readiness) stay unimplemented — still `requires_validation`.
-
-## 10. Exact instructions for the next session
-
-1. Read this file, then `docs/ENGINEERING_ROADMAP.md` Milestone 3, then `docs/DATA_ARCHITECTURE.md` (responsibilities and the now-implemented event schema) and `docs/OPERATIONAL_DOMAIN_MODEL.md` §4 (metric contract framework).
-2. Confirm Milestone 1–2 still work before building on them: `cd backend && pip install -e ".[dev]" && ruff check . && pytest -q` (expect skips, not failures, if Postgres isn't up); then `docker compose up -d postgres` (or a local Postgres on a port you set via `POSTGRES_PORT`), `alembic upgrade head`, and `python scripts/generate_synthetic_events.py --seed 42 --seed-db` to get a real event stream to build the analytics pipeline against.
-3. If you hit `alembic upgrade head` silently doing nothing against a database that's clearly missing its tables, that's the known tests-vs-dev-DB issue (§4.4/§6) — drop `alembic_version` and re-run, don't assume the migration itself is broken.
-4. dbt Core isn't installed anywhere yet (checked in the architecture phase: not present globally) — it'll need `pip install dbt-core dbt-duckdb` (or equivalent) added to `backend/pyproject.toml`'s `dev` or a new `analytics` extra; don't add it to the base runtime dependencies unless the API itself needs to invoke dbt directly.
-5. Keep metrics marked `requires_validation` unimplemented — do not approximate DEA/OTD/Sort Compliance/FPY/FSAF/Timely Staged/Route readiness formulas to "get something working." Only the `proposed` metrics from `docs/OPERATIONAL_DOMAIN_MODEL.md` §4.1 are in scope.
-6. When Milestone 3 is done: update this file's status table and date, run `ruff check .` and `pytest -q` one more time and report the actual result, and update `docs/OPEN_QUESTIONS.md` for anything resolved or newly found — the same discipline this session tried to model, not a one-time thing.
+1. Read this file, then `docs/ENGINEERING_ROADMAP.md` Milestone 4, then `docs/DIGITAL_TWIN_SPEC.md` and ADR-0006.
+2. Confirm Milestones 1–3 still work before building on them: `cd backend && pip install -e ".[dev,analytics]" && ruff check .`; then bring up Postgres (`docker compose up -d postgres`, remember the 5433 remap), `alembic upgrade head`, `python scripts/generate_synthetic_events.py --seed 42 --seed-db`, `python scripts/export_events_to_parquet.py --out ../data/processed/events.parquet`, `cd analytics && dbt run --profiles-dir . && dbt test --profiles-dir .`, then `cd .. && pytest -q` — in that order (seed/export/dbt before pytest, see §5).
+3. The digital twin is new Python, likely under `backend/app/simulation/` (currently empty) plus a top-level `simulation/` directory for scenario definitions — check both existing empty dirs before deciding where code vs. config belongs.
+4. Simulation output should be structured to match what the Milestone 3 analytics pipeline already consumes (the `events` table's shape, or something compatible with it) — so simulated and real data stay comparable through one pipeline, not two parallel ones. Worth deciding deliberately whether simulated events flow through the *same* `EventStore`/Parquet-export path (tagged `source_kind = simulated`) or a separate one; lean toward the same path given `source_kind` exists precisely to make that safe.
+5. Resolve or make progress on the scenario-config file format open question (`docs/OPEN_QUESTIONS.md`) early — it blocks real implementation start.
+6. When Milestone 4 is done: update this file's status table and date, run the full verification sequence from step 2 one more time and report the actual result, and update `docs/OPEN_QUESTIONS.md` for anything resolved or newly found.

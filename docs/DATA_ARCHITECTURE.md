@@ -13,27 +13,42 @@ Local-first, open-source-first (ADR-0001). PostgreSQL, DuckDB, Parquet, and dbt 
 | **Parquet** | Portable columnar storage for historical events and analytical snapshots | Durable, engine-independent format; what DuckDB reads directly and what a future warehouse adapter would ingest. See ADR-0003. |
 | **dbt Core** | Transformation/modelling logic that turns raw events into analytical tables | Reproducible, version-controlled SQL transformations, run against DuckDB locally (and, later, against whichever analytical warehouse is configured). |
 
-`backend/app/db/postgres.py` and `backend/app/db/duckdb.py` already implement the connection layer for the first two; `data/raw/`, `data/processed/`, `data/synthetic/`, `data/analytics/` are the placeholder directories for the Parquet/DuckDB-file side (currently empty, gitignored contents).
+`backend/app/db/postgres.py` and `backend/app/db/duckdb.py` implement the connection layer for the first two; `data/raw/`, `data/processed/`, `data/synthetic/`, `data/analytics/` hold the Parquet/DuckDB-file side (gitignored contents — regenerate via the scripts below, don't expect them to be present after a fresh clone).
 
-## Data flow (target shape)
+## Data flow (implemented, Milestone 3)
 
 ```
 Domain events (app/domain, written via app/repositories)
         │
         ▼
-PostgreSQL (operational event log + current state)
-        │  periodic export / CDC-style batch (Milestone 3)
+PostgreSQL events table (event log of record)
+        │  backend/scripts/export_events_to_parquet.py (batch export, manual/on-demand — no scheduler yet)
         ▼
-Parquet files under data/processed/  (immutable, append-oriented)
+data/processed/events.parquet  (one file, overwritten on each export — not yet partitioned or incremental)
         │
         ▼
-dbt Core models  ──────────────▶  DuckDB (data/analytics/stationos.duckdb)
+dbt Core project (backend/analytics/): raw → cleaned → curated → operational_intelligence
+        ▼
+DuckDB (data/analytics/stationos.duckdb)  — the same file app/db/duckdb.py's connection manager uses
         │
         ▼
-Analytical services (app/analytics) ──▶ API ──▶ frontend dashboards / agent evidence queries
+Queried directly (via `duckdb`/Python) today; an app/analytics service + API route is deferred
+until a real consumer needs one (an agent in Milestone 5+, the frontend in Milestone 10) — see
+docs/ENGINEERING_ROADMAP.md.
 ```
 
-`data/raw/` holds unprocessed inputs (e.g., synthetic event generator output before validation); `data/synthetic/` holds the generated synthetic datasets themselves (scenario fixtures for the digital twin and for seeding Postgres in dev).
+`data/raw/` holds unprocessed inputs (e.g., synthetic event generator output before validation); `data/synthetic/` holds the generated synthetic datasets themselves (scenario fixtures for the digital twin and for seeding Postgres in dev). Neither is used by the Milestone 3 pipeline above, which exports directly from PostgreSQL to `data/processed/`.
+
+### dbt project layering (`backend/analytics/`)
+
+| Layer | Models | Purpose |
+|---|---|---|
+| `raw` | `raw_events` | Literal `read_parquet()` of the export — no transformation |
+| `cleaned` | `cleaned_events` | Typed envelope columns; `payload` cast to JSON for downstream parsing |
+| `curated` | `curated_parcel_events`, `curated_parcel_lifecycle` | Payload fields flattened into typed columns; one row per parcel with key lifecycle timestamps — the analytical-layer counterpart to `app/services/event_ingestion.py`'s projector, kept separately testable rather than shared code, since the two have different jobs (maintaining Postgres's current-state rows per write vs. restating the same facts as a queryable batch view) |
+| `operational_intelligence` | `metric_induct_throughput`, `metric_jackpot_volume`, `metric_parcel_dwell_time`, `metric_stow_throughput`, `metric_wips` | The five `proposed`-status metrics from `docs/OPERATIONAL_DOMAIN_MODEL.md` §4.1 that don't require organization-specific validation |
+
+Run it: `cd backend/analytics && dbt run --profiles-dir . && dbt test --profiles-dir .` (after exporting Parquet — see `HANDOFF.md` for the full command sequence). `event_type`'s accepted-values test (`models/cleaned/_cleaned__models.yml`) must be kept in sync by hand with `backend/app/events/event_types.py` — there's no automated check that they match; tracked in `docs/OPEN_QUESTIONS.md`.
 
 ## Event schema conventions
 
@@ -62,4 +77,14 @@ If Snowflake tooling exists on a developer's machine, StationOS code must never 
 
 ## Data quality
 
-Deferred to Milestone 3 in concrete form, but the shape is: completeness checks (expected event sequence per parcel/entity), freshness checks (recorded_at - occurred_at skew), and schema-conformance checks (event validates against its declared `schema_version`). These feed the "data-quality requirements" field of the metric contract (`docs/OPERATIONAL_DOMAIN_MODEL.md` §4) — a metric should not be marked `validated` if its required source events don't yet pass these checks.
+**Implemented (Milestone 3)** as dbt tests (`backend/analytics/`), rather than only as the Python-layer projector's `lifecycle_consistent` flag — an analytics consumer querying DuckDB directly has no visibility into that application-layer flag, so the same invariants are reinforced here:
+
+| Check | How |
+|---|---|
+| Completeness (expected event sequence per parcel) | `tests/assert_no_missing_induct_event.sql` — a non-`parcel.inducted` event whose entity never had one is a failure |
+| Timestamp validity | `tests/assert_occurred_at_not_after_recorded_at.sql` — an event can't be recorded before it happened |
+| Valid event types | `accepted_values` test on `cleaned_events.event_type`, against the literal list in `backend/app/events/event_types.py` (manually kept in sync — see `docs/OPEN_QUESTIONS.md`) |
+| Null/uniqueness | `not_null`/`unique` generic tests across `raw_events`, `cleaned_events`, and the curated/metric layers |
+| Metric-contract requirements | `assert_no_negative_dwell_time.sql`, `assert_jackpot_volume_non_negative.sql` — a metric's own internal invariants, not just its inputs' |
+
+Not yet implemented: schema-conformance checks against `schema_version` (only one version of each event type exists so far — nothing to check conformance *against* yet) and freshness checks (`recorded_at - occurred_at` skew) — there's no live/streaming consumer yet for whom freshness would matter; revisit when one exists.
