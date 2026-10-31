@@ -1,0 +1,75 @@
+# System Architecture
+
+## Guiding shape: modular monolith
+
+StationOS is one deployable backend (`backend/`) with strict internal module boundaries, not a microservices mesh (ADR applies the "avoid premature microservices" principle directly — no dedicated ADR number since it's a default, not a one-time decision; revisit only if a specific module needs independent scaling/deployment that the monolith can't accommodate). FastAPI + SQLAlchemy + Alembic + PostgreSQL + DuckDB, per `docs/DATA_ARCHITECTURE.md`.
+
+## Six layers
+
+### Layer 1 — Operational domain
+Entities from `docs/OPERATIONAL_DOMAIN_MODEL.md` (trucks, parcels, induct, sort clusters, aisles, hampers, stowers, bags, jackpot, high-value processing, carts, routes, waves, staging, vans, dispatch, returns, planning). Lives in `backend/app/domain/` — currently empty, populated starting Milestone 2.
+
+### Layer 2 — Data and event infrastructure
+Event ingestion, validation, normalisation, storage; operational state reconstruction; analytical modelling; data-quality monitoring. Spans `backend/app/db/` (already present: PostgreSQL + DuckDB connection management), `backend/app/repositories/` (empty), and the `data/` tree. Detailed in `docs/DATA_ARCHITECTURE.md`.
+
+### Layer 3 — Station intelligence and digital twin
+Current station state, parcel lifecycle, resource availability, queue lengths, capacity constraints, simulation scenarios, forecasts. Lives in `backend/app/simulation/` (empty) and `backend/app/analytics/` (empty). Detailed in `docs/DIGITAL_TWIN_SPEC.md`.
+
+### Layer 4 — Agentic AI and reinforcement learning
+Two **separate but interoperable** sub-layers:
+- **Agentic AI** (`backend/app/agents/`, `backend/app/orchestration/`): reasoning, investigation, planning, tool coordination, evidence gathering, explanation, memory, recommendation generation. Detailed in `docs/AGENTIC_ARCHITECTURE.md`.
+- **Reinforcement learning** (`backend/app/rl/`): formally defined sequential decision problems, policy learning, simulation-based evaluation, optimisation under constraints. Detailed in `docs/RL_ENVIRONMENT_SPEC.md`.
+
+An LLM is never a substitute for a properly defined optimisation algorithm, and an RL policy is never given authority an agent's evidence pipeline hasn't governed — the two sub-layers communicate through typed interfaces, not a shared black box.
+
+### Layer 5 — Decision governance
+Policy engine, constraint validation, risk evaluation, human approval, role-based permissions, audit records, decision provenance. Lives in `backend/app/security/` (empty). Detailed in `docs/SECURITY_AND_GOVERNANCE.md`.
+
+### Layer 6 — Operational experience
+Station command centre, dashboards, AI copilot, investigation workspace, simulation workspace, planning workspace, decision history, model/policy evaluation views. Lives in `frontend/` (not started).
+
+## Module dependency direction
+
+Layers depend **downward only**:
+
+```
+Layer 6 (frontend)
+   ↓ HTTP (backend/app/api)
+Layer 5 (security/governance)  ←  gates actions from Layer 4
+   ↓
+Layer 4 (agents/orchestration, rl)  ←  reads from Layer 3
+   ↓
+Layer 3 (simulation, analytics)  ←  reads from Layer 2
+   ↓
+Layer 2 (db, repositories)  ←  persists/reads Layer 1
+   ↓
+Layer 1 (domain)
+```
+
+`backend/app/core/` (settings, logging) is a cross-cutting utility layer every module may depend on; it depends on nothing else in the app. `backend/app/api/` is the HTTP boundary — it orchestrates calls into the layers above but contains no business logic itself (currently just `routes/health.py`, which probes Layer 2 directly since there's no Layer 3+ yet).
+
+A module must not reach sideways into another vertical's internals (e.g., `agents/` must not import directly from `simulation/`'s internal state — it goes through a typed service interface in `services/` or `analytics/`).
+
+## Current implementation state
+
+| Module | State |
+|---|---|
+| `app/core` | Implemented — settings (env-driven), structured JSON logging |
+| `app/db` | Implemented — PostgreSQL (SQLAlchemy engine/session) + DuckDB (file-backed connection) connectivity, each with a readiness probe |
+| `app/api/routes/health.py` | Implemented — `/health` (liveness), `/health/ready` (dependency readiness) |
+| `app/domain`, `repositories`, `services`, `schemas` | Scaffolded (empty), Milestone 2 |
+| `app/orchestration`, `agents` | Scaffolded (empty), Milestone 5 |
+| `app/analytics` | Scaffolded (empty), Milestone 3 |
+| `app/simulation` | Scaffolded (empty), Milestone 4 |
+| `app/rl` | Scaffolded (empty), Milestone 6 |
+| `app/security` | Scaffolded (empty), Milestone 7 |
+| `alembic/` | Wired to `app.db.postgres.Base.metadata`; no model migrations yet |
+| `frontend/`, `infra/`, `ml/`, `simulation/` (top-level) | Placeholder directories only |
+
+## Deployment topology (target, local-first)
+
+Docker Compose brings up: the FastAPI backend container, a PostgreSQL container, and (later) a frontend dev server. DuckDB is embedded — no server/container of its own, just a file under `data/analytics/`. No `docker-compose.yml` exists yet; it's a Milestone 2 deliverable (`docs/ENGINEERING_ROADMAP.md`).
+
+## Observability
+
+Structured JSON logging via `structlog` is already in place. OpenTelemetry tracing is deferred until there's more than one process/hop worth tracing — introducing it now would be instrumenting a system that doesn't do anything yet. Revisit once the orchestration layer (Layer 4) exists and a request can span multiple agent steps worth correlating.

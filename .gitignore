@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Node / frontend
+node_modules/
+dist/
+build/
+.next/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Data artifacts (synthetic generators write here; not committed)
+data/raw/*
+data/processed/*
+data/synthetic/*
+data/analytics/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/synthetic/.gitkeep
+!data/analytics/.gitkeep
+*.duckdb
+*.parquet
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
