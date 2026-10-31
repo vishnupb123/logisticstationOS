@@ -1,0 +1,15 @@
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+**/.pytest_cache
+**/.ruff_cache
+.git
+.venv
+venv
+node_modules
+frontend/node_modules
+data/raw/*
+data/processed/*
+data/synthetic/*
+data/analytics/*
+!data/*/.gitkeep
