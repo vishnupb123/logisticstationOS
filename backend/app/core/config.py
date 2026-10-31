@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1"
 
+    # CORS (Milestone 10's API layer): a local Vite dev server runs on
+    # a different origin (port) than the API. This is a local-first,
+    # single-operator tool, not a public multi-tenant service — the
+    # default allow-list is deliberately narrow (localhost dev ports
+    # only), not a wildcard, and is meant to be overridden via env var
+    # rather than widened in code if a real deployment ever needs more.
+    cors_allowed_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
     @property
     def postgres_dsn(self) -> str:
         return (

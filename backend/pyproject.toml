@@ -83,6 +83,14 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+# FastAPI's own idiomatic dependency-injection pattern is a function
+# call in an argument default (`db: Session = Depends(get_db)`) — B008
+# would otherwise flag this standard, correct usage as a mutable-
+# default-style bug, which it isn't (Milestone 10's API layer is the
+# first place in this codebase that uses Depends()).
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends"]
+
 # Alembic-generated migration files are machine-written and re-generated,
 # not hand-styled — only line length is exempted, so a genuinely unused
 # import or similar still gets caught.
