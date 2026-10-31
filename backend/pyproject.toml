@@ -51,6 +51,17 @@ rl = [
     "stable-baselines3>=2.3,<3.0",
     "torch>=2.2,<3.0",
 ]
+# Not a base runtime dependency — offline predictive-model
+# training/evaluation (docs/ENGINEERING_ROADMAP.md M8) is a research
+# tool run via backend/scripts/, same reasoning as the `rl` extra above.
+predictive = [
+    "scikit-learn>=1.5,<1.6",
+    # Transitive via scikit-learn, but imported directly
+    # (app/predictive/jackpot_risk/predict.py) — pinned explicitly
+    # rather than relying on whatever version scikit-learn happens to
+    # pull in.
+    "joblib>=1.4,<2.0",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
