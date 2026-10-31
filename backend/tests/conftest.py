@@ -7,6 +7,7 @@ from app.db.postgres import Base, SessionLocal, engine
 from app.events import models as event_models  # noqa: F401 — registers the events table
 from app.main import app
 from app.orchestration import models as orchestration_models  # noqa: F401 — agent_executions
+from app.security import models as security_models  # noqa: F401 — decision_records
 
 
 @pytest.fixture
