@@ -1,6 +1,6 @@
 # ADR-0005: Agent orchestration approach
 
-**Status**: Accepted (narrow scope) — framework choice open for revisit
+**Status**: Accepted; implemented 2026-10-31 (Milestone 5) — framework choice still open for revisit per the conditions below
 
 ## Context
 
@@ -32,3 +32,7 @@ Start with a custom, purpose-built state machine in `backend/app/orchestration/`
 ## Revisit conditions
 
 Revisit once 2+ agents need cross-agent checkpoint/resume behavior the custom machine is clearly straining to support, or once the orchestration code itself becomes a maintenance burden disproportionate to the agent roster's size.
+
+## Implementation note (2026-10-31)
+
+Built as `AgentDefinition` (three plain functions: `gather_evidence`, `interpret`, `build_fallback_output`) run by `AgentExecutor` (`backend/app/orchestration/runner.py`) — not a base class agents subclass, which is what keeps the "thin boundary" from §Consequences real: an agent module can be tested by calling its three functions directly, with zero orchestration machinery involved (see `backend/tests/agents/flow_intelligence/test_agent.py`'s non-executor tests). One checkpoint boundary (evidence before interpretation) proved sufficient for the first agent; `resume()` demonstrates the checkpoint is load-bearing, not decorative, by completing a previously-failed execution without re-running `gather_evidence`. Persistent state is a PostgreSQL `agent_executions` table, doubling as the audit record every agent contract's "Audit provenance" field requires.

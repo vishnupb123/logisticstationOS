@@ -24,7 +24,9 @@ Status values: `unresolved` (no leaning yet), `leaning` (a tentative direction e
 | Question | Why it matters | Current leaning | Status |
 |---|---|---|---|
 | Custom orchestration state machine vs. LangGraph — final call | ADR-0005 starts custom; revisit condition is defined there | Revisit once 2+ agents need cross-agent checkpoint/resume behavior the custom machine is clearly straining to support | `leaning` |
-| Which LLM provider(s) back the production `LLMProvider` abstraction (ADR-0008)? | Needed before Milestone 5 can run anything for real | None yet — deliberately deferred past CLI-based development | `unresolved` |
+| Which LLM provider(s) back the production `LLMProvider` abstraction (ADR-0008)? | Needed before Milestone 5 can run anything for real | **Resolved 2026-10-31** by project-owner decision: a local Ollama server, for true local-first inference. See ADR-0008's amendment. | `resolved` |
+| Live verification of `OllamaProvider` against a real running Ollama server | Ollama isn't installed on this development machine; the adapter is only verified against a mocked HTTP layer so far | Install Ollama, `ollama pull <model>` matching `Settings.ollama_model` (default `llama3.1`), run `ollama serve`, then re-run the Flow Intelligence Agent with a real `OllamaProvider` instead of `FakeLLMProvider` | `unresolved` |
+| Dynamic, LLM-driven tool selection for agents whose evidence-gathering should vary by situation | The Flow Intelligence Agent always calls the same fixed five tools deterministically — no agent yet needs the LLM to choose among tools, so no permission-checking registry was built for that case | Build a real tool-permission-checking layer only when an agent actually needs variable tool selection (likely the Investigation Agent, Milestone 7+) — not speculatively now | `unresolved` |
 | Exact memory/retrieval mechanism for past decision records | `docs/AGENTIC_ARCHITECTURE.md` §Memory sketches the shape but not the implementation | None | `unresolved` |
 
 ## Digital twin / RL

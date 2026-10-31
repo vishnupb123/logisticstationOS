@@ -4,7 +4,7 @@ Instructions for AI coding assistants (Claude Code and others) working in this r
 
 ## What this project is
 
-StationOS is a local-first logistics operations intelligence platform. Milestones 1–4 (software foundation; Cycle-1 domain model and event infrastructure; data engineering and analytics; digital twin) are complete; Milestone 5 (agentic AI system) is next. Full context: `docs/PRODUCT_VISION.md`, `docs/OPERATIONAL_DOMAIN_MODEL.md`, `docs/SYSTEM_ARCHITECTURE.md`, `docs/ENGINEERING_ROADMAP.md`, and `docs/adr/`.
+StationOS is a local-first logistics operations intelligence platform. Milestones 1–5 (software foundation; Cycle-1 domain model and event infrastructure; data engineering and analytics; digital twin; agentic AI system — one agent) are complete; Milestone 6 (reinforcement-learning environment) is next. Full context: `docs/PRODUCT_VISION.md`, `docs/OPERATIONAL_DOMAIN_MODEL.md`, `docs/SYSTEM_ARCHITECTURE.md`, `docs/ENGINEERING_ROADMAP.md`, and `docs/adr/`.
 
 ## Hard rules
 
@@ -32,6 +32,10 @@ StationOS is a local-first logistics operations intelligence platform. Milestone
 - **A new dbt model needs a clear analytical purpose, not just plausibility.** `docs/ENGINEERING_ROADMAP.md`'s Milestone 3 non-goal is explicit: no dbt model should duplicate application logic (e.g. the event-ingestion projector) without a reason beyond "it could be useful."
 - **Any code claiming reproducibility given a seed must get *every* "random" value — including UUIDs — from its own seeded `random.Random`, via `app/core/determinism.py::rng_uuid`/`rng_hex`.** Reaching for the system `uuid.uuid4()` or an unseeded `random` call anywhere in such code silently breaks determinism — this is not hypothetical, it shipped as a real bug in the Milestone 2 generator and had to be fixed.
 - **The digital twin never touches PostgreSQL.** Simulated events (`app/simulation/model.py`) go straight to Parquet (`app/simulation/export.py`), tagged `source_kind = simulated` on every event — never through `EventStore`/`ingest_event`. See ADR-0006's amendment for why (a simulation run isn't "operational truth," ADR-0002). Don't add a path that ingests simulated data into Postgres without revisiting that decision deliberately, not as a side effect of unrelated work.
+- **An agent is three plain functions (`gather_evidence`, `interpret`, `build_fallback_output`), not a base class to subclass.** See `app/orchestration/runner.py::AgentDefinition` and `app/agents/flow_intelligence/agent.py` for the pattern. This is what keeps an agent's own logic testable without any orchestration machinery involved (`tests/agents/flow_intelligence/test_agent.py`'s non-executor tests) — don't introduce an `Agent` base class agents inherit from instead.
+- **`FakeLLMProvider` (`app/core/llm/fake.py`) is test-only, never a silent runtime default.** An agent with no real provider configured must fail loudly, not quietly return scripted output in production (`docs/AGENTIC_ARCHITECTURE.md` "Failure handling... never fabricate").
+- **Restrict an LLM-facing output schema to only the evidence categories that step is actually allowed to produce — structurally, with `Literal[...]`, not by prompt instruction.** `app/agents/flow_intelligence/schemas.py::LLMFinding` only accepts `inferred`/`hypothesis`/`prediction` — Pydantic itself rejects `observation`/`calculated` (reserved for the deterministic path) and `recommendation` (no Layer 5 to approve one). Follow this pattern for every future agent's LLM-facing schema, don't rely on the prompt alone to hold the line.
+- **`OllamaProvider` (`app/core/llm/ollama.py`) has not been verified against a real running Ollama server** — not installed on this development machine as of Milestone 5. Its request/response handling is verified against a mocked HTTP layer only (`tests/core/test_llm_ollama.py`). Don't claim or assume live-verified behavior beyond what those tests actually check; if you get a real Ollama server running, update `docs/OPEN_QUESTIONS.md` and ADR-0008's amendment once you do.
 
 ## Before implementing a new area of the system
 
@@ -57,6 +61,10 @@ cd analytics && dbt run --profiles-dir . && dbt test --profiles-dir .
 # digital twin — no database needed
 python scripts/run_simulation.py --scenario ../simulation/scenarios/normal_operations.yaml \
     --out ../data/processed/simulated_events.parquet
+
+# Flow Intelligence Agent — see README.md "Running the Flow Intelligence Agent"
+# for a full snippet; needs a DuckDB with analytics models built (above),
+# and either a running Ollama server or FakeLLMProvider for the LLM step.
 
 # or, from the repo root, the full stack:
 docker compose up -d

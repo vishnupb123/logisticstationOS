@@ -4,6 +4,8 @@
 
 Default to **a carefully designed custom state machine** (`backend/app/orchestration/`) over adopting LangGraph wholesale for v1 — see ADR-0005 for the evaluation and the revisit condition. Whatever is chosen, every agent needs: typed input/output schemas, explicit tool permissions, persistent execution state, checkpointing, retries/timeouts, evidence provenance, and a model-provider abstraction (ADR-0008). Agents never get unrestricted access to application data or arbitrary tools.
 
+**Implemented (Milestone 5)**: `AgentExecutor`/`AgentDefinition` (`backend/app/orchestration/runner.py`). An agent is three plain functions — `gather_evidence`, `interpret`, `build_fallback_output` — not a framework base class to subclass; the executor wraps them with one checkpoint boundary (evidence persisted before the LLM step), bounded retries with a per-attempt timeout on `interpret` only (evidence-gathering is deterministic and isn't retried), and a `resume()` that continues a checkpointed execution without re-gathering evidence. Every execution is a row in `agent_executions` (PostgreSQL) — the audit record each agent contract's "Audit provenance" field points at.
+
 ## Hierarchical agent roster
 
 ### Station Orchestrator
@@ -15,8 +17,33 @@ Investigates forecast volumes, truck arrivals, capacity, and planning scenarios.
 ### Investigation Agent
 Investigates operational problems using evidence from relevant domain services. General-purpose evidence gatherer the Orchestrator dispatches for "what happened" questions.
 
-### Flow Intelligence Agent
+### Flow Intelligence Agent — ✅ implemented (Milestone 5)
 Analyses induct, sortation, stow, WIPS, jackpot, and capacity constraints (Cycle 1 domain).
+
+Full contract (`backend/app/agents/flow_intelligence/agent.py`):
+
+```
+Agent: flow_intelligence
+Responsibility: analyses induct, sortation, stow, WIPS, and jackpot metrics
+    for Cycle 1, from the Milestone 3 analytics pipeline.
+Input schema: FlowIntelligenceInput (duckdb_path)
+Output schema: FlowIntelligenceOutput (findings: list[Finding], interpretation_error)
+Tool permissions: query_jackpot_volume, query_wips, query_induct_throughput,
+    query_stow_throughput, query_parcel_dwell_time — exactly these five
+Persistent state: one agent_executions row per run (input, checkpointed
+    evidence, output, status, timestamps)
+Retry / timeout policy: up to 2 retries (3 attempts total) on the LLM
+    interpretation step only, 30s timeout per attempt
+Audit provenance: the agent_executions row itself
+Evaluation criteria: deterministic findings' numbers exactly match the
+    DuckDB source; every finding carries a valid EvidenceCategory; LLM
+    findings restricted to inferred/hypothesis/prediction only
+    (structurally, not by convention — see tests/agents/flow_intelligence/)
+Failure handling: on exhausted LLM retries, returns the deterministic
+    findings with interpretation_error set — never fabricates an LLM finding
+```
+
+Verified against a real induced jackpot backlog (synthetic generator → PostgreSQL → Parquet → dbt → agent, a mid-run snapshot truncated before all jackpot diverts had been cleared): the agent correctly reported an 18-parcel backlog (26 cumulative diverts, 8 cumulative clears) as an `observation`, citing `metric_jackpot_volume`, plus a correctly-tagged `hypothesis` from the LLM step. See `HANDOFF.md` for the full run.
 
 ### Dispatch Intelligence Agent
 Analyses Pick & Stage, cart readiness, wave progress, route readiness, and departure risk (Cycle 2 domain).
@@ -51,9 +78,13 @@ Every agent output is a typed object carrying one of the evidence categories fro
 
 Each agent is issued a specific, named set of tools (e.g., Flow Intelligence Agent might get `query_induct_metrics`, `query_jackpot_state`, `query_hamper_capacity` — not a generic "run SQL" tool). Tools are typed functions with validated inputs/outputs, not raw database or shell access. This is a governance boundary, not just an engineering convenience: it's what makes "agents must not have unrestricted access to application data" actually true rather than aspirational.
 
+**Implemented**: the allow-list is enforced by what an agent module actually imports and calls (`backend/app/agents/flow_intelligence/tools.py`), not a runtime permission-checking registry — there is no dynamic, LLM-driven tool selection yet (the LLM never chooses which tool to call; `gather_evidence` always calls the same fixed five, deterministically, before the LLM is involved at all). A future agent whose evidence-gathering genuinely needs to vary by situation would need a real permission-checking layer; tracked as an open question, not built speculatively now.
+
 ## Model-provider abstraction
 
 Agent code calls an internal `LLMProvider` interface (ADR-0008), never a vendor SDK directly. Claude Code/Claude CLI is the tool used to *build* StationOS during development; it is explicitly not assumed to be the production inference path, and no agent logic may depend on a developer's personal subscription being available at runtime.
+
+**Implemented (Milestone 5)**: `backend/app/core/llm/` — `LLMProvider` (a `Protocol` with one method, `complete_structured`), `FakeLLMProvider` (scriptable, test-only), and `OllamaProvider` (the first real adapter, chosen by the project owner for true local-first operation — no API key, no cloud account). See ADR-0008's amendment for what "real" means here: the adapter's request/response handling is verified against a mocked HTTP layer; no live Ollama server was reachable on this development machine, so a genuine live call hasn't been exercised yet.
 
 ## Memory
 

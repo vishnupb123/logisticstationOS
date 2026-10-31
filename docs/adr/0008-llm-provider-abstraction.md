@@ -1,6 +1,6 @@
 # ADR-0008: LLM provider abstraction
 
-**Status**: Accepted
+**Status**: Accepted; amended 2026-10-31 — first provider adapter chosen (see §"Amendment" below)
 
 ## Context
 
@@ -33,3 +33,9 @@ This is a governance requirement as much as a technical one: "the application mu
 ## Revisit conditions
 
 Revisit the interface shape once the first concrete provider adapter is implemented and its fit against real usage is known.
+
+## Amendment (2026-10-31): first provider adapter chosen
+
+The project owner selected the first real adapter directly, when asked (this ADR's own Consequences flagged the choice as an explicit open question, not something to decide unilaterally): **a local Ollama server** — no API key, no cloud account, true local-first operation for the inference layer, matching the data layer's own principles (ADR-0001) rather than defaulting to a hosted frontier model. `backend/app/core/llm/ollama.py::OllamaProvider` sends Ollama's `/api/chat` endpoint a JSON-schema `format` derived from the agent's own Pydantic response model, so structured output is enforced by the server, not hoped for via prompt instructions.
+
+**Important caveat on "implemented"**: Ollama was not installed on the development machine this session, and installing new software / pulling a model wasn't done without being asked. `OllamaProvider`'s request/response handling (message format, schema passing, error handling for network failures, non-200 responses, invalid JSON, and schema-validation failures) is verified against a mocked HTTP layer (`backend/tests/core/test_llm_ollama.py`) — a genuine live call against a running Ollama server has not been exercised. The Flow Intelligence Agent's own exit-criteria demonstration (`docs/AGENTIC_ARCHITECTURE.md`) used `FakeLLMProvider` instead. Tracked in `docs/OPEN_QUESTIONS.md` as follow-up: install Ollama, pull a model matching `Settings.ollama_model`, and re-run the agent against the real adapter.

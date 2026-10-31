@@ -2,7 +2,7 @@
 
 **Purpose of this file**: the persistent, single source of truth for "where StationOS actually stands," written so a new engineering session (human or AI) can continue without this conversation's history. If something here conflicts with a doc in `docs/`, the more detailed doc wins for *content*; this file wins for *current status and what to do next*.
 
-Last updated: 2026-10-31 (Milestone 4 completed this session).
+Last updated: 2026-10-31 (Milestone 5 completed this session).
 
 ---
 
@@ -13,68 +13,74 @@ Last updated: 2026-10-31 (Milestone 4 completed this session).
 | 1 — Software foundation | ✅ Complete |
 | 2 — Domain model and event infrastructure (Cycle 1 slice) | ✅ Complete |
 | 3 — Data engineering and analytics | ✅ Complete |
-| 4 — Digital twin | ✅ **Complete** (this session) |
-| 5 — Agentic AI system | Not started — **next** |
-| 6–10 | Not started |
+| 4 — Digital twin | ✅ Complete |
+| 5 — Agentic AI system | ✅ **Complete** (this session) |
+| 6 — Reinforcement-learning environment | Not started — **next** |
+| 7–10 | Not started |
 
 Full milestone definitions: `docs/ENGINEERING_ROADMAP.md`.
 
-## 2. What was built this session (Milestone 4)
+## 2. A real decision this session needed from the project owner, and how it was resolved
 
-**Scenario configuration** (`backend/app/simulation/config.py`): YAML loaded into a typed Pydantic `ScenarioConfig` (station layout, truck arrivals, parcel timing/rates, resource levels) — resolves the scenario-config-format open question from the architecture phase. A malformed scenario file fails loudly at load time, not mid-simulation.
+Milestone 5's own roadmap entry names its first blocker explicitly: "which LLM provider backs `LLMProvider`." No API key or local LLM tooling (Ollama) was configured on this machine, and choosing a provider has real cost/account implications that aren't mine to decide unilaterally. Asked via `AskUserQuestion`; the project owner chose **a local Ollama server** (true local-first, no API key) over Anthropic/OpenAI/fake-only, and separately confirmed no key/tooling would be provided this session — build and mock-verify only. Both choices are now recorded as a dated amendment to ADR-0008, not just acted on silently.
 
-**The SimPy model** (`backend/app/simulation/model.py`) — the qualitative improvement over Milestone 2's generator: **real resource contention**, not random timestamps. A shared `induct_station` resource, a shared `stower_pool` resource, and per-aisle hampers (plain objects with `level`/`capacity`, not SimPy's `Container` — that blocks on a full `put()`, where the domain needs a non-blocking check-then-decide). Jackpot diversion **emerges from hampers actually being full** when a sort is attempted, not a probability knob. A periodically-replaced `simpy.Event` (`_JackpotSignal`) broadcasts jackpot clearing to every waiting parcel at once, matching "jackpot must be cleared and reintroduced" as one supervisory action rather than per-parcel retries.
+## 3. What was built this session (Milestone 5)
 
-**Two required scenarios** (`simulation/scenarios/`): `normal_operations.yaml`, `delayed_inbound_trucks.yaml`. Both deliberately use a 10-aisle, 3-capacity-hamper layout (not the full 122-aisle reference default) — at reference scale, 125 parcels spread uniformly would almost never fill a 40-capacity hamper, so the contention mechanism would be theoretically present but never actually exercised. Verified the two scenarios are meaningfully distinct (later, more compressed truck arrivals), not copies with a different seed.
+**`LLMProvider` abstraction** (`backend/app/core/llm/`, per ADR-0008): a one-method `Protocol` (`complete_structured`), deliberately minimal. `FakeLLMProvider` — scriptable, test-only, raises loudly once its queued responses run out rather than silently returning something plausible. `OllamaProvider` — the first real adapter: POSTs to `/api/chat` with the agent's Pydantic response model's own `model_json_schema()` passed as Ollama's `format` parameter (so the *server* enforces structure, not a hopeful prompt instruction), parses and validates the result, raises `LLMProviderError` on any network/status/parse/schema failure.
 
-**Shared determinism helpers** (`backend/app/core/determinism.py`): `rng_uuid`/`rng_hex`, extracted from the Milestone 2 generator (which previously had its own private copies) specifically because getting this wrong once already shipped a real bug (see §4). Both the generator and the twin now import from one place.
+**Orchestration state machine** (`backend/app/orchestration/`, per ADR-0005): `AgentDefinition` (three plain functions: `gather_evidence`, `interpret`, `build_fallback_output` — not a base class) run by `AgentExecutor`. One checkpoint boundary: evidence is gathered once (deterministic, not retried) and persisted before the LLM-dependent `interpret` step, which retries up to `max_retries` times with a per-attempt timeout. On exhausted retries, `build_fallback_output` produces a graceful degradation (deterministic findings only, explicit `interpretation_error`) rather than a crash or a fabricated result. Every run is a row in a new PostgreSQL `agent_executions` table — the audit record. `AgentExecutor.resume()` continues a checkpointed execution without re-gathering evidence — tested by proving the evidence-gathering function's call count stays at 1 across an initial failure and a later successful resume.
 
-**Output path** (`backend/app/simulation/export.py` + `backend/app/events/parquet_io.py`, the latter also extracted from `app/services/parquet_export.py` so both Milestone 3's PostgreSQL export and Milestone 4's simulation output share one Parquet-writing implementation): simulated events are the exact same `EventEnvelope` objects the real pipeline uses, tagged `source_kind = SIMULATED` on every event, written **straight to Parquet — never through PostgreSQL/EventStore**. This is a real architectural decision, not a default fallen into — recorded as a dated amendment to ADR-0006. Rationale: a simulation run isn't "operational truth" (ADR-0002); comparability with real data is achieved at the schema/dbt level, not by mixing simulated rows into the operational database.
+**Analytics query layer** (`backend/app/analytics/duckdb_queries.py`): finally populated, per `docs/SYSTEM_ARCHITECTURE.md`'s own prediction that this module would fill in "once an API/agent consumer needs it." Five typed, read-only functions wrapping the Milestone 3 dbt metrics (jackpot volume, WIPS, induct throughput, stow throughput, parcel dwell time) — read-only connections, so nothing here can write to the analytical database; a missing table (analytics pipeline never run) raises DuckDB's own error rather than returning a silently-empty default.
 
-**CLI**: `backend/scripts/run_simulation.py` — runs a scenario, writes Parquet + a `.manifest.json` (scenario, seed, SimPy version, run id, generated-at — docs/DIGITAL_TWIN_SPEC.md's reproducibility requirements).
+**The Flow Intelligence Agent** (`backend/app/agents/flow_intelligence/`): the narrowest-scoped agent in the roster. `gather_evidence` calls exactly five named tools (`tools.py`), nothing else — the tool-permission allow-list is what the code imports, not a runtime check. `interpret` builds deterministic `observation`/`calculated` findings directly from the evidence (no LLM involved for these — they're facts, not interpretation) and separately asks the LLM for `inferred`/`hypothesis`/`prediction`-only findings via a structurally restricted schema (`LLMFinding`'s category is `Literal[INFERRED, HYPOTHESIS, PREDICTION]` — Pydantic itself rejects `observation`, `calculated`, and `recommendation`). This directly implements two of the milestone's hardest requirements as type-system guarantees, not conventions: "the LLM never performs a calculation the analytics layer should" and "no recommendation" (no Layer 5 exists yet to approve one).
 
-**Dependency changes**: `simpy`, `pyyaml`, `pandas`, `pyarrow` promoted to base dependencies in `backend/pyproject.toml` (previously `pandas`/`pyarrow` were in the `analytics` extra) — `app/simulation` and `app/events/parquet_io.py` are core application modules, not a side tool, unlike dbt (which stays in the `analytics` extra, genuinely a separate CLI tool).
+**Migration**: `agent_executions` table (`87b9a804de1e_add_agent_executions_table.py`), autogenerated, upgrade/downgrade-verified.
 
-**16 new tests** (`backend/tests/simulation/`): config loading/validation, determinism (same seed → byte-identical output including `event_id`), conservation (every simulated parcel ends in a terminal state, verified via the *real* `event_ingestion.project_parcel` function — not a twin-specific reimplementation of the check), forced jackpot contention, the two shipped scenarios actually differing, Parquet round-trip, run-manifest content.
+**30 new tests** (49 → 79 total): LLM provider tests (11 — fake provider scripting/exhaustion, Ollama request/response/error handling against a mocked HTTP layer, no live server), orchestration tests (5 — checkpointing, retry-then-succeed, exhausted-retries-fallback, resume-without-regathering), analytics query tests (7 — against a hand-built DuckDB fixture matching the real dbt schema, no dbt dependency needed for the test suite itself), agent evaluation tests (7 — including the literal exit-criteria scenario end-to-end through the real `AgentExecutor`).
 
-## 3. A real design mistake caught and fixed before it shipped
+## 4. The exit-criteria scenario, run for real — not just the test suite
 
-While writing `model.py`, I initially copied Milestone 2's per-event-type `source_kind` pattern (`PHYSICAL_OBSERVATION` for scan-like events, `SYSTEM_RECORDED` for bookkeeping events) directly into the twin. That's wrong for a simulation: **every** event the twin produces is simulated — none of them represent a real physical observation or a real system's bookkeeping. Caught this by re-reading the module's own docstring (which already correctly said "tagged `source_kind=SIMULATED`") against the code I'd actually written, which didn't match it. Fixed by removing `source_kind` as a per-call parameter entirely and hardcoding `EventSourceKind.SIMULATED` inside `_Context.emit()` — structurally impossible to get wrong at a call site now, not just corrected this once. Verified via `test_export.py::test_parquet_round_trips...` asserting `frame["source_kind"].eq("simulated").all()`, and by direct DuckDB inspection after running the actual dbt pipeline against simulated output (`SELECT DISTINCT source_kind FROM cleaned_events` → exactly `simulated`, nothing else).
+Beyond the hand-built-fixture tests, ran the **actual pipeline** this session: generated synthetic Cycle-1 events with an elevated jackpot rate (seed 777, 3 trucks × 30 parcels, `jackpot_rate=0.35`), ingested into PostgreSQL, exported to Parquet, then **truncated the export to a mid-run snapshot** (60th percentile by `occurred_at`) — deliberately capturing the station mid-operation, before all jackpot diverts had been cleared, since a *complete* closed batch always ends with diverts == clears (the same "WIPS reads 0 for a closed run" property documented in Milestone 3). Ran `dbt run` against that snapshot (not `dbt test` — a mid-run snapshot has legitimately incomplete lifecycles by construction, which isn't a data-quality bug to flag here), then ran the real `AGENT` through the real `AgentExecutor` against the resulting DuckDB file, with `FakeLLMProvider` standing in for the LLM step (no live Ollama server available). Result:
 
-## 4. Verification performed (not claimed without running)
+```
+[observation] Jackpot volume: 18 parcel(s) currently in jackpot (26 cumulative diverts, 8 cumulative clears).
+    evidence: ['metric_jackpot_volume']
+[observation] Work in process: 70 parcel(s) inducted but not yet stowed.
+    evidence: ['metric_wips']
+[calculated] Parcel dwell time (induct to stow) over 4 stowed parcel(s): min 305s, avg 486s, max 605s.
+    evidence: ['metric_parcel_dwell_time']
+[hypothesis] Jackpot clears are lagging diverts, consistent with stowers not yet keeping pace with sort volume this early in the run.
+    evidence: ['metric_jackpot_volume']
+interpretation_error: None
+```
 
-- Ran `ruff check .` clean across all new/modified code.
-- Ran the full 49-test backend suite (33 from Milestones 2–3 + 16 new) against a live Postgres — all passed; confirmed the determinism refactor (`app/core/determinism.py`) didn't change the Milestone 2 generator's behavior (its own 5 tests still pass unchanged).
-- Ran both shipped scenarios directly (not just via pytest): inspected actual event counts and type breakdowns, confirmed internal consistency by hand (e.g., `sort_attempted(sorted) count == stowed count`; `jackpot occurrences == jackpot_cleared count`), confirmed every event validates against the real production Pydantic schemas (`app.events.schemas.validate_payload`), confirmed zero inconsistent/non-terminal parcels via the real projector.
-- **The headline verification**: ran the *unmodified* `backend/analytics/` dbt project (same `dbt_project.yml`, same models, same tests) against simulated Parquet output instead of real synthetic-generator output, by pointing `STATIONOS_EVENTS_PARQUET`/`STATIONOS_DUCKDB_PATH` at different files — got the same 9 models built and all 30 tests passing. This is the literal, verified truth of the roadmap's exit criteria ("simulated and real data are comparable through the same pipeline"), not an assertion resting on the two formats merely looking similar on paper.
-- Checked computed metrics against simulated data for sanity: `metric_wips = 0` (consistent with Milestone 3's documented finding — a closed run always reads 0), jackpot diverts exactly matched clears, dwell times short but positive (the twin's timing config is deliberately fast for test purposes, not meant to replicate real durations).
+This is the literal roadmap exit criterion, satisfied against real generated/ingested/transformed data, not a synthetic test double standing in for the whole pipeline.
 
 ## 5. Known limitations
 
-- Cycle 2 (Pick & Stage, dispatch waves, routes, vans, returns) is not simulated — same Cycle-1-only scope as Milestone 2, by design.
-- The high-value/sideline/future-date/exception cage workflow is not simulated — a non-`normal_cycle1` classification stops the simulated parcel at `pending_exception`, mirroring the (also-unmodeled) application-layer boundary.
-- Only 2 of the 10 catalogued scenarios are built (`docs/DIGITAL_TWIN_SPEC.md` §"Scenario catalog" now states which config fields already support each of the other 8 without new code, and which would need a new config field).
-- Induct scanning and classification are combined into one resource/decision point rather than physically separate stations — a deliberate simplification, not an oversight.
-- `app/simulation` has no priority queueing (`simpy.PriorityResource`) — not needed by either shipped scenario.
-- The tests-vs-dev-database isolation gap from Milestone 2 is unchanged and doesn't affect this milestone (the twin never touches Postgres at all).
+- **`OllamaProvider` has never made a real network call.** Ollama isn't installed on this machine; verification is against a mocked HTTP layer only. Installing Ollama/pulling a model wasn't done without being asked (`docs/OPEN_QUESTIONS.md` tracks this as explicit follow-up work, not a forgotten gap).
+- No dynamic, LLM-driven tool selection — `gather_evidence` always calls the same fixed five tools. Fine for this agent; a future agent needing variable evidence-gathering would need a real permission-checking registry, not built speculatively now.
+- Only one agent exists. The roster (Station Orchestrator, Investigation, Dispatch Intelligence, Planning, Reconciliation and Returns) and multi-agent coordination are explicit non-goals for this milestone.
+- `AgentExecutor`'s checkpoint boundary is deliberately singular (evidence before interpretation) — sufficient for one agent with one LLM-dependent step; a more complex agent might need more than one checkpoint, which the current design doesn't preclude but also doesn't yet demonstrate.
+- The tests-vs-dev-database isolation gap from Milestone 2 is unchanged; hit it again mid-session (ran `pytest` between seeding steps, which dropped tables and staled `alembic_version` as expected) and recovered the same documented way.
 
 ## 6. Open questions
 
-Full register: `docs/OPEN_QUESTIONS.md`. Resolved this session: scenario-config-format (YAML + Pydantic). Updated: the station-profile question now notes `ScenarioConfig.station_layout` as the de facto answer, with a reusable "profile" abstraction still not built since nothing needs a second layout yet. Unchanged and highest-priority for what's ahead: which LLM provider backs `LLMProvider` (blocks Milestone 5), metric formulas still `requires_validation` for the organization-specific metrics, the dbt/`event_types.py` manual-sync gap.
+Full register: `docs/OPEN_QUESTIONS.md`. Resolved this session: which LLM provider (Ollama, project-owner decision). New this session: live `OllamaProvider` verification pending; dynamic tool-selection deferred. Unchanged and highest-priority: metric formulas still `requires_validation` for the organization-specific metrics; the dbt/`event_types.py` manual-sync gap; scenario/station-profile abstraction still not built (nothing needs a second layout yet).
 
 ## 7. Security considerations
 
-No change to governance stance. The twin produces no real data and never touches PostgreSQL, so there's no new surface for real/simulated data to be confused in the operational store — that's structural (ADR-0006's amendment), not a discipline to maintain by convention.
+No change to governance stance. `OllamaProvider` requires no API key/credential — it's a local HTTP call to a server the developer runs themselves, so there's nothing secret to protect in `backend/.env.example`'s new `OLLAMA_BASE_URL`/`OLLAMA_MODEL` entries. The Flow Intelligence Agent's structural inability to emit a `recommendation` category (`LLMFinding`'s `Literal` restriction) is a concrete, type-enforced instance of ADR-0009's governance stance — not yet exercised against real approval flows (Layer 5 doesn't exist), but already impossible to bypass accidentally once Layer 5 does.
 
 ## 8. Recommended next milestone
 
-**Milestone 5 — Agentic AI system** (`docs/ENGINEERING_ROADMAP.md`): the orchestration state machine (ADR-0005), the `LLMProvider` abstraction (ADR-0008) with at least one real provider adapter, and the Flow Intelligence Agent (narrowest-scoped, since Cycle 1 data exists from Milestones 2–4) with its full contract — typed input/output, explicit tool permissions, persistent state, checkpointing, retry/timeout, execution tracing, evaluation tests — producing evidence-category-tagged output (`observation | calculated | inferred | hypothesis | prediction | recommendation`).
+**Milestone 6 — Reinforcement-learning environment** (`docs/ENGINEERING_ROADMAP.md`): a Gymnasium environment wrapping the Milestone 4 digital twin, for the narrow decision problem the project owner already selected (ADR-0007 amendment): aisle-level stow capacity and workload balancing under variable inbound flow. State/action/reward design is still open work — naming the problem didn't settle its formalization.
 
 ## 9. Exact instructions for the next session
 
-1. Read this file, then `docs/ENGINEERING_ROADMAP.md` Milestone 5, then `docs/AGENTIC_ARCHITECTURE.md` and ADR-0005/ADR-0008.
-2. Confirm Milestones 1–4 still work: `cd backend && pip install -e ".[dev,analytics]" && ruff check .`; bring up Postgres, `alembic upgrade head`, run `pytest -q` (49 tests, DB-dependent ones skip if Postgres isn't up); run both scenarios via `scripts/run_simulation.py` and confirm they still produce sane output.
-3. Milestone 5's first concrete decision is which LLM provider implements `LLMProvider` for real (`docs/OPEN_QUESTIONS.md`) — this blocks everything else in the milestone and should be resolved or explicitly raised early, not discovered mid-implementation.
-4. The Flow Intelligence Agent's evidence should be able to cite the Milestone 3 analytics pipeline's metrics and/or the Milestone 4 twin's scenario comparisons — check both are queryable (via DuckDB directly, since there's still no API layer onto either) before assuming what evidence is actually available to ground the agent's output in.
-5. Respect the evidence-category scheme from the start (`docs/AGENTIC_ARCHITECTURE.md`) — this is a structural requirement (typed output, not prose convention), not something to retrofit after a first working version.
-6. When Milestone 5 is done: update this file's status table and date, run the full verification sequence from step 2 one more time and report the actual result, and update `docs/OPEN_QUESTIONS.md` for anything resolved or newly found.
+1. Read this file, then `docs/ENGINEERING_ROADMAP.md` Milestone 6, then `docs/RL_ENVIRONMENT_SPEC.md` and ADR-0007 (including its amendment).
+2. Confirm Milestones 1–5 still work: `cd backend && pip install -e ".[dev,analytics]" && ruff check .`; bring up Postgres, `alembic upgrade head` (two migrations now), `pytest -q` (79 tests). The Flow Intelligence Agent's own tests don't need Postgres or dbt for most of them — only `tests/orchestration/` and the end-to-end agent tests do.
+3. Milestone 6 depends on the Milestone 4 digital twin as its environment (`docs/DIGITAL_TWIN_SPEC.md` §"Relationship to RL") — re-familiarize with `app/simulation/model.py`'s resource-contention design before wrapping it; the RL environment's state/action space should reflect what the twin actually models (hamper levels, induct/stower contention), not an idealized version of it.
+4. This is explicitly a research-direction milestone (`docs/RL_ENVIRONMENT_SPEC.md`: "treat this as a research hypothesis, not a result to assume") — resist the urge to over-claim results; a baseline comparison that actually ran is the only thing worth reporting as a finding.
+5. If a live Ollama server becomes available in a future session (this one didn't have one), that's a good opportunity to close the "live verification pending" open question before building further agents on top of the same provider — not required for Milestone 6, but worth doing opportunistically.
+6. When Milestone 6 is done: update this file's status table and date, run the full verification sequence from step 2 one more time and report the actual result, and update `docs/OPEN_QUESTIONS.md` for anything resolved or newly found.
