@@ -1,0 +1,33 @@
+# Held-out variation of rl_stow_balancing.yaml for generalization
+# testing (docs/RL_ENVIRONMENT_SPEC.md "Generalisation / robustness") —
+# never used for training, only evaluation. Same layout/resources;
+# more inbound volume (4 trucks x 30 parcels instead of 3 x 20).
+name: rl_stow_balancing_high_volume
+description: >
+  Held-out generalization scenario: same station layout and resource
+  levels as rl_stow_balancing.yaml, higher inbound volume.
+seed: 2002
+
+station_layout:
+  cluster_a_aisle_count: 6
+  cluster_b_aisle_count: 0
+  hamper_capacity: 2
+
+truck_arrivals:
+  truck_count: 4
+  first_arrival_offset_minutes: 0
+  arrival_interval_minutes: 4
+  pallet_count_min: 4
+  pallet_count_max: 8
+  unload_duration_minutes: 5
+
+parcels:
+  parcels_per_truck: 30
+  exception_rate: 0.05
+  induct_duration_seconds: 3
+  stow_duration_seconds: 25
+
+resources:
+  induct_capacity: 2
+  stower_count: 1
+  jackpot_clear_interval_minutes: 2

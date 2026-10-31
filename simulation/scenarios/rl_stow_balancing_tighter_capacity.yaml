@@ -1,0 +1,33 @@
+# Held-out variation of rl_stow_balancing.yaml for generalization
+# testing — never used for training, only evaluation. Same volume;
+# tighter hamper capacity (1 instead of 2), so the cost of misordering
+# stow priority is even higher.
+name: rl_stow_balancing_tighter_capacity
+description: >
+  Held-out generalization scenario: same inbound volume as
+  rl_stow_balancing.yaml, tighter hamper capacity.
+seed: 2003
+
+station_layout:
+  cluster_a_aisle_count: 6
+  cluster_b_aisle_count: 0
+  hamper_capacity: 1
+
+truck_arrivals:
+  truck_count: 3
+  first_arrival_offset_minutes: 0
+  arrival_interval_minutes: 4
+  pallet_count_min: 4
+  pallet_count_max: 8
+  unload_duration_minutes: 5
+
+parcels:
+  parcels_per_truck: 20
+  exception_rate: 0.05
+  induct_duration_seconds: 3
+  stow_duration_seconds: 25
+
+resources:
+  induct_capacity: 2
+  stower_count: 1
+  jackpot_clear_interval_minutes: 2

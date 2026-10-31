@@ -1,0 +1,49 @@
+# A scenario purpose-built for Milestone 6's RL decision problem
+# (aisle-level stow capacity and workload balancing), distinct from the
+# Milestone 4 twin-exercise scenarios (normal_operations.yaml,
+# delayed_inbound_trucks.yaml). Those have ample stow capacity relative
+# to volume — hampers fully drain between decision points, leaving
+# nothing for a priority policy to actually balance. This scenario
+# deliberately constrains stow capacity (2 stowers) relative to volume
+# and aisle count, so a persistent, reallocatable backlog exists for a
+# policy to act on — see docs/RL_ENVIRONMENT_SPEC.md.
+name: rl_stow_balancing
+description: >
+  Constrained-stow-capacity scenario for training/evaluating aisle-level
+  stow-priority policies. Not a twin-fidelity scenario in its own right
+  — tuned specifically to make the balancing decision matter.
+seed: 2001
+
+# Tuning note: hamper_capacity=4 / stower_count=2 looked "constrained"
+# on paper but never actually bound in practice — total stow throughput
+# is capacity-fixed regardless of service order, and no hamper ever hit
+# its cap, so reordering which aisle got served next had nothing to
+# differentiate (confirmed empirically: a uniform-priority and an
+# occupancy-greedy policy produced byte-identical trajectories). Tighter
+# capacity (2) and a single stower actually drive hampers to their cap,
+# making which aisle gets served next the thing that determines whether
+# a parcel jackpots — verified empirically to produce different reward
+# across policies on the same seed before this file was finalized.
+station_layout:
+  cluster_a_aisle_count: 6
+  cluster_b_aisle_count: 0
+  hamper_capacity: 2
+
+truck_arrivals:
+  truck_count: 3
+  first_arrival_offset_minutes: 0
+  arrival_interval_minutes: 4
+  pallet_count_min: 4
+  pallet_count_max: 8
+  unload_duration_minutes: 5
+
+parcels:
+  parcels_per_truck: 20
+  exception_rate: 0.05
+  induct_duration_seconds: 3
+  stow_duration_seconds: 25
+
+resources:
+  induct_capacity: 2
+  stower_count: 1
+  jackpot_clear_interval_minutes: 2
