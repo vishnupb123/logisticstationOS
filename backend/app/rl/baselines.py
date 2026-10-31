@@ -40,3 +40,19 @@ class RuleBasedPolicy:
     def predict(self, obs, state=None, episode_start=None, deterministic=True):
         occupancy = np.asarray(obs[: self._n], dtype=np.float32)
         return occupancy, None
+
+
+class FixedWeightPolicy:
+    """A constant, named, per-aisle priority-weight vector that never
+    reacts to state — the shape a Milestone 7 "candidate intervention"
+    takes: an explicit, human-reviewable vector a policy engine and an
+    approver can inspect directly, not a black box. StaticBaselinePolicy
+    is the special case where every weight is 0.5; this generalizes it
+    to an arbitrary named vector supplied by app/security/decision_service.py.
+    """
+
+    def __init__(self, weights):
+        self._action = np.asarray(weights, dtype=np.float32)
+
+    def predict(self, obs, state=None, episode_start=None, deterministic=True):
+        return self._action, None

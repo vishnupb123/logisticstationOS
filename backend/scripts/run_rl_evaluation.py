@@ -17,14 +17,13 @@ Example:
 
 import argparse
 import json
-import statistics
 from pathlib import Path
 
-import numpy as np
 from stable_baselines3 import PPO
 
 from app.rl.baselines import RuleBasedPolicy, StaticBaselinePolicy
 from app.rl.env import DEFAULT_DECISION_INTERVAL_SECONDS, DEFAULT_MAX_STEPS, StowBalancingEnv
+from app.rl.evaluation import evaluate_policy
 from app.simulation.config import load_scenario
 
 _SCENARIOS = {
@@ -33,58 +32,6 @@ _SCENARIOS = {
     "held_out_tighter_capacity": "../simulation/scenarios/rl_stow_balancing_tighter_capacity.yaml",
 }
 _EVAL_SEEDS = [101, 102, 103, 104, 105]
-_AGGREGATE_KEYS = (
-    "total_reward",
-    "total_stowed",
-    "max_jackpot_backlog",
-    "constraint_violations",
-    "steps",
-    "mean_occupancy",
-)
-
-
-def run_episode(env: StowBalancingEnv, policy, seed: int) -> dict:
-    obs, _info = env.reset(seed=seed)
-    total_reward = 0.0
-    total_stowed = 0
-    max_backlog = 0
-    constraint_violations = 0
-    steps = 0
-    occupancy_samples: list[float] = []
-    terminated = truncated = False
-
-    while not (terminated or truncated):
-        action, _state = policy.predict(obs, deterministic=True)
-        obs, reward, terminated, truncated, info = env.step(np.asarray(action))
-        total_reward += reward
-        total_stowed += info["stowed_count"]
-        max_backlog = max(max_backlog, info["jackpot_backlog"])
-        constraint_violations += info["constraint_violations"]
-        occupancy_samples.append(info["mean_hamper_occupancy"])
-        steps += 1
-
-    return {
-        "seed": seed,
-        "total_reward": total_reward,
-        "total_stowed": total_stowed,
-        "max_jackpot_backlog": max_backlog,
-        "constraint_violations": constraint_violations,
-        "steps": steps,
-        "mean_occupancy": statistics.fmean(occupancy_samples) if occupancy_samples else 0.0,
-        "terminated_cleanly": bool(terminated),
-    }
-
-
-def aggregate(results: list[dict]) -> dict:
-    agg = {}
-    for key in _AGGREGATE_KEYS:
-        values = [r[key] for r in results]
-        agg[f"{key}_mean"] = statistics.fmean(values)
-        agg[f"{key}_stdev"] = statistics.pstdev(values) if len(values) > 1 else 0.0
-    agg["episodes"] = len(results)
-    cleanly = sum(1 for r in results if r["terminated_cleanly"])
-    agg["terminated_cleanly_rate"] = cleanly / len(results)
-    return agg
 
 
 def main() -> None:
@@ -124,9 +71,9 @@ def main() -> None:
         scenario_report = {}
         print(f"--- {scenario_label} ({scenario_path}) ---")
         for policy_name, policy in policies.items():
-            episode_results = [run_episode(env, policy, seed) for seed in _EVAL_SEEDS]
-            agg = aggregate(episode_results)
-            scenario_report[policy_name] = {"episodes": episode_results, "aggregate": agg}
+            result = evaluate_policy(env, policy, _EVAL_SEEDS)
+            agg = result["aggregate"]
+            scenario_report[policy_name] = result
             print(
                 f"  {policy_name}: reward={agg['total_reward_mean']:.2f}"
                 f"±{agg['total_reward_stdev']:.2f} stowed={agg['total_stowed_mean']:.1f} "
