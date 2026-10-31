@@ -1,0 +1,28 @@
+.stat-tile {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 18px;
+  min-width: 160px;
+}
+
+.stat-tile__label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.stat-tile__value {
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-top: 4px;
+  font-variant-numeric: proportional-nums;
+}
+
+.stat-tile__caption {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}

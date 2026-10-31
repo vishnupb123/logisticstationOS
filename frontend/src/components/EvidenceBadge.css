@@ -1,0 +1,10 @@
+.evidence-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--slot);
+  background: color-mix(in srgb, var(--slot) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--slot) 35%, transparent);
+}

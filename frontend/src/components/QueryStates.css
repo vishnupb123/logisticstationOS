@@ -1,0 +1,20 @@
+.query-state {
+  padding: 16px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.query-state--loading {
+  color: var(--text-muted);
+}
+
+.query-state--error {
+  color: var(--status-critical);
+  background: color-mix(in srgb, var(--status-critical) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--status-critical) 35%, transparent);
+}
+
+.query-state--empty {
+  color: var(--text-muted);
+  font-style: italic;
+}
