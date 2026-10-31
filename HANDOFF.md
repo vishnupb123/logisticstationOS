@@ -2,7 +2,7 @@
 
 **Purpose of this file**: the persistent, single source of truth for "where StationOS actually stands," written so a new engineering session (human or AI) can continue without this conversation's history. If something here conflicts with a doc in `docs/`, the more detailed doc wins for *content*; this file wins for *current status and what to do next*.
 
-Last updated: 2026-10-31 (Milestone 6 completed this session).
+Last updated: 2026-10-31 (Milestone 7 completed this session).
 
 ---
 
@@ -15,80 +15,83 @@ Last updated: 2026-10-31 (Milestone 6 completed this session).
 | 3 — Data engineering and analytics | ✅ Complete |
 | 4 — Digital twin | ✅ Complete |
 | 5 — Agentic AI system | ✅ Complete |
-| 6 — Reinforcement-learning environment | ✅ **Complete** (this session) |
-| 7 — Agent and RL coordination | Not started — **next** |
-| 8–10 | Not started |
+| 6 — Reinforcement-learning environment | ✅ Complete |
+| 7 — Agent and RL coordination | ✅ **Complete** (this session) |
+| 8 — Predictive intelligence | Not started — **next** |
+| 9–10 | Not started |
 
 Full milestone definitions: `docs/ENGINEERING_ROADMAP.md`.
 
-## 2. What was built this session (Milestone 6)
+## 2. A real decision this session needed from the project owner, and how it was resolved
 
-**Dependencies**: a new `rl` extra in `backend/pyproject.toml` (`gymnasium`, `stable-baselines3`, `torch`) — deliberately *not* a base dependency, since most of the app never touches RL. Installed/verified versions: gymnasium 1.0.0, stable-baselines3 2.9.2, torch 2.15.0.
+Before starting Milestone 7, the project owner asked to also build the frontend (Milestone 10) and connect it to everything built so far. Two things made this worth surfacing rather than silently doing: `docs/ENGINEERING_ROADMAP.md` states Milestone 10's own non-goal verbatim ("nothing here gets built early just because 'it would be nice to see something'"), and there is currently almost no HTTP API for a frontend to connect to (`app/api/` has only `/health`). Asked via `AskUserQuestion`; the project owner chose to hold off on the frontend this round and do Milestone 7 first, fully verified, before any frontend/API work — recorded here rather than silently resequencing the roadmap. **Frontend work remains explicitly not started and not scoped yet** — it needs its own deliberate conversation (likely alongside or after Milestone 9, per the roadmap's own sequencing and Layer 6's dependency on Layer 5).
 
-**`app/simulation/model.py` refactor** (backward compatible — all 16 existing Milestone 4 simulation tests pass unchanged): added a `StowPriorityProvider` protocol and a default no-op implementation; `stower_pool` changed from a plain `simpy.Resource` to a `simpy.PriorityResource`, with each stow request's priority now sourced from `ctx.stow_priority_provider`; extracted a new public `setup_simulation(config, *, stow_priority_provider=None)` that builds the environment and context without running it, so an RL environment can step the simulation incrementally instead of only running it to completion; added a small `aisle_codes_for(config)` helper.
+## 3. What was built this session (Milestone 7)
 
-**`app/rl/` — the RL environment** (per ADR-0007's amendment, naming "aisle-level stow capacity and workload balancing under variable inbound flow" as the first problem):
-- `env.py`: `AisleStowPriorityController` converts a per-aisle action vector into SimPy priorities by **bucketing into 10 discrete levels**, not a full ranking — see §4 for why this mattered. It also enforces a hard anti-starvation floor (`MIN_PRIORITY_WEIGHT = 0.05`; no aisle's priority weight can ever reach literal zero), structurally in the environment, not as a reward penalty, per ADR-0007/ADR-0009. `StowBalancingEnv(gymnasium.Env)`: `Box` action space (one priority weight per aisle), `Box` observation space (per-aisle hamper occupancy, stower utilization, normalized jackpot backlog, episode time fraction), `step()` advances the simulation by a fixed decision interval (60s) and returns reward = `stowed_count - 0.5*max(backlog_delta, 0) - 1.0*mean_hamper_occupancy`.
-- `baselines.py`: `StaticBaselinePolicy` (uniform weights) and `RuleBasedPolicy` (priority = current occupancy), both exposing SB3's `.predict()` interface so they drop into the same evaluation harness as a trained PPO policy.
-- `scripts/train_rl_policy.py` / `scripts/run_rl_evaluation.py`: CLIs to train a PPO policy against a scenario and to evaluate static/rule-based/PPO across multiple seeds and scenarios, writing an aggregated JSON report.
-- Scenarios: `simulation/scenarios/rl_stow_balancing.yaml` (training), plus two held-out variants never used in training — `rl_stow_balancing_high_volume.yaml` (more trucks/parcels) and `rl_stow_balancing_tighter_capacity.yaml` (tighter hamper capacity).
+**`backend/app/security/`** (Layer 5 — scaffolded empty since Milestone 1, now real):
+- `models.py`: `DecisionRecord` — one row per decision, carrying `context`, `evidence` (serialized `Finding`s), `candidates` (named interventions + their simulated evaluation), `policy_engine_result`, `risk_evaluation`, and, once approved, `selected_candidate`/`approved_by`/`approval_rationale`/`decided_at`, and, once observed, `observed_outcome`/`outcome_recorded_at`.
+- `repository.py`: the only place a `DecisionRecord`'s status is allowed to change. `approve_decision`/`reject_decision` refuse anything not `pending_approval`; `record_observed_outcome` refuses anything not `approved`. This is the literal code form of ADR-0009's "no path lets a recommendation become acted on without approval" — not a convention, a `ValueError` on misuse.
+- `policy_engine.py`: deliberately simple and rule-based, not learned. Checks a decision type against an explicit allow-list (`{"aisle_stow_priority"}`) and independently re-validates the anti-starvation floor the RL environment already enforces structurally — defense in depth, since a human-authored candidate could bypass the environment entirely.
+- `risk.py`: an explicitly-labeled minimal stub. Every decision type today only affects the digital twin (never a live system), so `blast_radius="simulation_only"`/`reversible=True` is honestly true — not a general risk model. ADR-0009's own Consequences section already flagged this needs real design work later (Milestone 8/9).
+- `decision_service.py`: the actual coordination logic — `evaluate_candidates` runs each named candidate intervention through a real `StowBalancingEnv` simulation (via the new `app/rl/evaluation.py`, shared with the Milestone 6 report so there's one evaluation code path, not two); `propose_decision` runs the policy engine + risk evaluation and builds a deterministic `calculated` comparison plus a `recommendation` finding (the first real use of the `recommendation` evidence category anywhere in the system — meaningful for the first time now that Layer 5 exists to approve one); `observe_outcome` runs a fresh simulation with the approved candidate's weights and records it, gated by the repository's approval check.
 
-**12 new RL tests + 3 baseline tests** (79 → 91 total): environment space/determinism/termination tests, the shipped scenario actually loading, and specific tests for the priority controller's true-tie bucketing, differentiated priorities, and the anti-starvation floor (including that it doesn't clip when already at the floor).
+**`app/rl/evaluation.py`** (new): `run_episode`/`aggregate`/`evaluate_policy`, extracted from `scripts/run_rl_evaluation.py` so the Milestone 6 baseline report and this milestone's candidate evaluation share one implementation. `app/rl/baselines.py` gained `FixedWeightPolicy` — a named, constant, arbitrary priority-weight vector (generalizes `StaticBaselinePolicy`'s uniform special case), the shape a Milestone 7 candidate intervention takes.
 
-## 3. The required evaluation, run for real
+**Migration**: `57b3ef4063b0_add_decision_records_table.py`, autogenerated, upgrade/downgrade-verified.
 
-Per ADR-0007 ("no RL performance claim is published without a baseline comparison on held-out scenarios actually having run"): trained PPO for 50,000 timesteps (~23–47s wall-clock) against the training scenario, then evaluated all three policies across 5 seeds on the training scenario *and* both held-out scenarios. Re-ran the evaluation a second time and confirmed byte-identical JSON output (reproducibility check).
+**`backend/scripts/run_decision_demo.py`**: demonstrates the full pipeline end to end against real Postgres and real simulation — propose a decision (evidence modeled on the real Milestone 5 jackpot-backlog run) → policy engine → attempt (and get refused) to record an outcome before approval → human approval, deliberately overriding the system's own recommendation with an honest stated rationale (demonstrating approval is a real judgment call, not a rubber stamp) → observed-outcome simulation run. Verified reproducible: re-running produces identical candidate evaluation numbers given the same fixed seeds.
 
-| Scenario | Policy | Reward | Stowed | Max jackpot backlog | Constraint violations |
-|---|---|---|---|---|---|
-| training | static | 25.53 ± 1.08 | 58.0 | 26.2 | 0.0 |
-| training | rule-based | 26.92 ± 0.67 | 58.6 | 27.2 | 24.2 |
-| training | PPO | **30.95 ± 0.44** | 58.0 | 27.4 | 31.4 |
-| high_volume (held out) | static | 40.30 ± 0.72 | 114.2 | 71.2 | 0.0 |
-| high_volume (held out) | rule-based | 40.47 ± 0.76 | 114.2 | 71.2 | 39.2 |
-| high_volume (held out) | PPO | **51.30 ± 1.49** | 115.6 | 72.8 | 57.0 |
-| tighter_capacity (held out) | static | 26.37 ± 0.80 | 58.0 | 32.0 | 0.0 |
-| tighter_capacity (held out) | rule-based | 26.37 ± 0.72 | 58.0 | 32.0 | 32.6 |
-| tighter_capacity (held out) | PPO | 26.63 ± 1.31 | 58.2 | 32.2 | 35.8 |
+**20 new tests** (91 → 111 total): `tests/security/test_policy_engine.py` (6, pure logic), `tests/security/test_repository.py` (9, DB-dependent against real Postgres — including both approval guards), `tests/security/test_decision_service.py` (5, running the real RL environment end to end, including the literal exit-criteria lifecycle test).
 
-Full results and methodology: `docs/RL_ENVIRONMENT_SPEC.md` §"Evaluation protocol and results".
+## 4. The exit-criteria scenario, run for real
 
-## 4. Two real bugs found and fixed
+Both the test suite (`tests/security/test_decision_service.py::test_full_lifecycle_propose_approve_observe_outcome`) and `scripts/run_decision_demo.py` produce a full decision record — context → evidence → candidates (with real simulated evaluation) → policy-engine result → human approval → observed outcome — queried back end to end for the shipped `rl_stow_balancing` scenario. The structural guard was exercised, not just asserted: `run_decision_demo.py` step 2 calls `record_observed_outcome` on a still-pending decision and shows it being refused with a real `ValueError`, live.
 
-1. **Argsort-ranking bug.** The first `AisleStowPriorityController` implementation converted action weights to priorities via a full `argsort`-based ranking. Full argsort never produces true ties, so a "uniform" action vector was *not* equivalent to FIFO (SimPy's own tie-break) — it silently imposed an arbitrary ordering. Fixed by bucketing weights into 10 discrete priority levels so equal/near-equal weights collapse to the same priority value, restoring genuine FIFO behavior under a uniform action.
-2. **Scenario-tuning bug.** The first scenario attempt (`hamper_capacity=4`, `stower_count=2`, 300s decision interval) never actually created contention: static and rule-based policies produced byte-identical trajectories, because total stow throughput was capacity-bound regardless of service order — reordering a queue that's never actually binding changes nothing. Found by directly diffing the two policies' trajectories, not assumed. Retuned to `hamper_capacity=2`, `stower_count=1`, 60s decision interval, and re-verified across 5 seeds that the policies genuinely diverge before building training/evaluation on top of it. **Lesson for next time**: a scenario config "looking" tight is not evidence it creates contention — verify empirically before trusting it.
+Sample real output (`run_decision_demo.py`, reproducible across runs):
+```
+candidates:
+  status_quo: reward=25.38 backlog=25.2 stowed=57.2
+  favor_first_half: reward=30.83 backlog=25.4 stowed=56.4
+  favor_second_half: reward=28.70 backlog=25.0 stowed=56.8
+...
+  [recommendation] Recommend candidate 'favor_second_half' — lowest simulated mean jackpot backlog (25.0)...
+...
+selected_candidate: favor_first_half (by demo-operator)
+approval_rationale: Overriding the system's own backlog-minimizing recommendation: 'favor_first_half' has the highest simulated reward...
+observed_outcome: reward=29.92 backlog=27.4
+```
+Note how close the three candidates' backlog numbers are (25.0–25.4) — consistent with Milestone 6's own finding that these interventions don't meaningfully move the metric that matters. This is an honest result, not a contrived one: the coordination *mechanism* works correctly regardless.
 
-## 5. The honest finding (read this before using the trained policy for anything)
+## 5. Deliberate design choice: no PPO as a candidate
 
-PPO achieved the highest reward in 2 of 3 evaluated scenarios, but its **jackpot-backlog outcome — the metric that actually matters** — was the same or marginally worse than both baselines' in *every* scenario, and PPO's reward advantage vanished entirely on the hardest held-out scenario (`tighter_capacity`). The likely cause: the reward's `mean_hamper_occupancy` shaping term (an added proxy, not a metric-contract value) dominated the outcome over the two metric-contract-backed terms (stow throughput, jackpot volume delta) that the reward was meant to serve. This is reported as a genuine first result for a narrow, falsifiable research direction — not smoothed into a success story, and not a verdict on RL as an approach. See ADR-0007's "Implementation note" amendment and `docs/RL_ENVIRONMENT_SPEC.md`'s "The honest finding" section for the full write-up.
-
-**The trained policy is not wired into any agent.** Given this result, doing so now would overstate its value (`docs/OPEN_QUESTIONS.md` tracks this explicitly as "leaning: not yet").
+Milestone 6's honest finding (PPO's reward advantage never translated into a better jackpot-backlog outcome than the baselines) is why the trained policy is **not** one of the candidates `decision_service.py` evaluates. Candidates are named, fixed priority-weight vectors plus the existing static/rule-based baselines — proving the coordination mechanism (propose → evaluate → govern → approve → observe) works independent of any one candidate being especially good, which was the actual point of sequencing it this way (see the previous session's own recommendation in this file's prior revision). `docs/OPEN_QUESTIONS.md` tracks "should PPO ever be wired into an agent as evidence" as still `leaning: not yet`.
 
 ## 6. Known limitations
 
-- The reward function as designed is not yet aligned with the metric that matters (jackpot backlog) — revisit the weighting, or drop the occupancy-shaping term for a sparser but more aligned signal, before training again. Tracked in `docs/OPEN_QUESTIONS.md`.
-- PPO was trained against one fixed world instantiation (same scenario seed every training episode). Domain randomization (varying seeds/parameters during training) is a standard fix for exactly the generalization failure seen on `tighter_capacity`, and hasn't been tried yet. Tracked in `docs/OPEN_QUESTIONS.md`.
-- Only one decision problem is formalized; the roster of other candidate RL problems in `docs/RL_ENVIRONMENT_SPEC.md` remains unbuilt by design (ADR-0007: one narrow problem at a time).
-- `OllamaProvider` live-verification gap from Milestone 5 is unchanged (still not exercised against a real Ollama server).
-- The tests-vs-dev-database isolation gotcha from Milestone 2 is unchanged (not hit this session's RL work specifically, since RL tests need no database — only resurfaced in the usual manual-dev-then-pytest sequence).
+- **RBAC does not exist.** `approved_by` on a `DecisionRecord` is a plain string, not a checked role — anyone calling `approve_decision` can approve anything. This is explicitly Milestone 9 scope, not an oversight here (`docs/SECURITY_AND_GOVERNANCE.md`).
+- **`risk.py` is a stub, not a risk model.** Every decision type today is honestly `simulation_only`/reversible because nothing acts on a live system yet — this will need real design work once a decision type with an actually-different blast radius exists.
+- **Only one decision type exists** (`aisle_stow_priority`) — the policy engine's allow-list has exactly one entry. Adding a second is a deliberate code change, not something a caller can opt into.
+- **The `OllamaProvider` live-verification gap and the tests-vs-dev-database footgun from prior milestones are unchanged** — the latter was hit again this session (running `pytest` between manual demo-script runs dropped tables and staled `alembic_version`, recovered the documented way).
 
 ## 7. Open questions
 
-Full register: `docs/OPEN_QUESTIONS.md`. Resolved this session: which narrow RL problem (already resolved prior session) was formalized, implemented, and evaluated — reward design is explicitly *not* resolved (leaning: revisit the weighting). New this session: does domain-randomized training generalize better (unresolved); should the trained PPO policy ever be wired into an agent as evidence (leaning: not yet). Unchanged and highest-priority: metric formulas still `requires_validation`; the dbt/`event_types.py` manual-sync gap; live `OllamaProvider` verification pending.
+Full register: `docs/OPEN_QUESTIONS.md`. New this session: real risk/blast-radius model beyond the Milestone 7 stub (unresolved — revisit once a second decision type with a genuinely different risk profile exists). Reaffirmed this session: should the trained PPO policy ever be wired in as evidence (still leaning: not yet — Milestone 7 built the coordination mechanism without it, deliberately). Unchanged: RBAC role model (unresolved — Milestone 9); metric formulas still `requires_validation`; live `OllamaProvider` verification pending.
 
 ## 8. Security considerations
 
-No change to governance stance. The anti-starvation floor in `AisleStowPriorityController` (`MIN_PRIORITY_WEIGHT`) is a concrete, structural instance of ADR-0009's "hard constraints at the environment level, not reward penalties" stance — a policy's action can shift priority but can never fully starve an aisle, regardless of what the reward function happens to reward. The RL environment still runs entirely offline against the digital twin (never against live operational state, never against PostgreSQL) — same ADR-0006 boundary the digital twin itself observes. No new secrets, credentials, or real data introduced.
+The decision-governance pipeline (`docs/SECURITY_AND_GOVERNANCE.md`) is now implemented end to end except for RBAC. The structural guarantee ADR-0009 requires — no recommendation becomes "acted on" without approval — is enforced in `app/security/repository.py`, verified by tests that call the guarded functions directly and assert the refusal, not just documented. Every decision type this system can currently propose only affects the digital twin; there is still no path from any agent or RL output to a live operational system. No new secrets, credentials, or real data introduced. `approved_by` accepting an arbitrary string is a known, explicitly-scoped-out gap (see §6) — do not build anything that treats it as an authenticated identity.
 
 ## 9. Recommended next milestone
 
-**Milestone 7 — Agent and RL coordination** (`docs/ENGINEERING_ROADMAP.md`): bring the Milestone 5 agentic layer and the Milestone 6 RL layer into the same typed-interface coordination model described in `docs/SYSTEM_ARCHITECTURE.md` Layer 4 ("an RL policy is never given authority an agent's evidence pipeline hasn't governed"). Given §5's honest finding, this is **not** "wire PPO's recommendations into the Flow Intelligence Agent" — the current policy isn't demonstrably better than the rule-based baseline on the metric that matters. Treat Milestone 7 as building the coordination *mechanism and governance path*, independent of whether any specific trained policy is good enough yet to flow through it.
+**Milestone 8 — Predictive intelligence** (`docs/ENGINEERING_ROADMAP.md`): carefully scoped predictive models (inbound volume forecasting, stow bottleneck prediction, jackpot accumulation risk, route readiness, dispatch delay risk, parcel reconciliation anomalies), starting with one, with a documented dataset, temporal (not random) train/test validation to avoid leakage, a baseline model, and an honest account of limitations. Predictions are tagged `prediction` per the evidence-category scheme, never presented as observations.
+
+**Frontend remains explicitly deferred** — per §2 above, the project owner chose to hold off this session; it needs its own scoping conversation (what subset of Milestone 10's full view list, what minimal API layer, how it relates to Milestone 9's still-missing RBAC) before any frontend code is written, not a default "do it next."
 
 ## 10. Exact instructions for the next session
 
-1. Read this file, then `docs/ENGINEERING_ROADMAP.md` Milestone 7, then `docs/SYSTEM_ARCHITECTURE.md` Layer 4, `docs/AGENTIC_ARCHITECTURE.md`, and `docs/RL_ENVIRONMENT_SPEC.md`'s "Relationship to the agentic layer" section.
-2. Confirm Milestones 1–6 still work: `cd backend && pip install -e ".[dev,analytics,rl]" && ruff check .`; bring up Postgres, `alembic upgrade head` (two migrations), `pytest -q` (91 tests). RL tests need no database or dbt.
-3. Before building anything that lets an RL policy's output influence an agent's findings, re-read §5 of this file — the current trained policy's result is a cautionary one, not a positive one. If Milestone 7 needs *a* policy to demonstrate coordination with, either revisit the reward design first (tracked in `docs/OPEN_QUESTIONS.md`) or be explicit that the coordination mechanism is being demonstrated independent of policy quality.
-4. Don't jump ahead of the roadmap (CLAUDE.md hard rule 4) — Milestone 7 is "agent and RL coordination," not predictive intelligence (Milestone 8) or governance (Milestone 9).
-5. If a live Ollama server becomes available, closing that open-question gap is a good opportunistic side task, not required for Milestone 7.
-6. When Milestone 7 is done: update this file's status table and date, run the full verification sequence from step 2 one more time and report the actual result, and update `docs/OPEN_QUESTIONS.md` for anything resolved or newly found.
+1. Read this file, then `docs/ENGINEERING_ROADMAP.md` Milestone 8, then `docs/OPERATIONAL_DOMAIN_MODEL.md` §4 (for which metrics/data already exist to build a dataset from) and `docs/AGENTIC_ARCHITECTURE.md`'s evidence-category scheme (predictions need the same honest-uncertainty treatment RL findings got in Milestone 6).
+2. Confirm Milestones 1–7 still work: `cd backend && pip install -e ".[dev,analytics,rl]" && ruff check .`; bring up Postgres, `alembic upgrade head` (three migrations now), `pytest -q` (111 tests). If `alembic upgrade head` silently no-ops, it's the documented tests-vs-dev-database footgun — drop `alembic_version` and retry.
+3. Pick the single predictive-model area best supported by existing data (Milestone 2–4's event/analytics data) per the roadmap's own guidance — don't build all six candidate areas before validating the pattern on one.
+4. Temporal train/test validation is non-negotiable for the exit criteria — random splits on time-series-like operational data leak future information into training; design the dataset split around this from the start, not as an afterthought.
+5. If the frontend conversation happens before Milestone 8 (the project owner may revisit §9's deferral), re-read `docs/ENGINEERING_ROADMAP.md` Milestone 10 and raise the same two concerns from §2 again before scoping: the "don't build it early" non-goal, and the near-total absence of an HTTP API today.
+6. When Milestone 8 is done: update this file's status table and date, run the full verification sequence from step 2 one more time and report the actual result, and update `docs/OPEN_QUESTIONS.md` for anything resolved or newly found.

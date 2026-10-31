@@ -8,28 +8,34 @@ StationOS must not autonomously control physical operations, employee allocation
 - The **RL layer** (`docs/RL_ENVIRONMENT_SPEC.md`) enforces safety/labour/authorisation constraints as hard constraints at the environment level, not as reward penalties, and its output is evaluated in simulation, not applied live, until there is an explicit, separately-decided path to do otherwise.
 - Anything operationally consequential routes through **Layer 5 governance** before it can be acted on.
 
-## Decision governance pipeline (target shape, Layer 5)
+## Decision governance pipeline (implemented, Milestone 7 — `backend/app/security/`)
 
 ```
 Recommendation (from agent or RL policy, with evidence + category tags)
         │
         ▼
 Policy engine  — is this type of action even eligible for this pathway?
-        │
+        (policy_engine.py — rule-based allow-list + constraint re-check)
         ▼
 Constraint validation  — hard constraints (safety, capacity, labour, authorisation)
-        │
+        (policy_engine.py, same pass — plus the RL environment's own
+         structural enforcement, e.g. the anti-starvation floor)
         ▼
 Risk evaluation  — what's the blast radius / reversibility of acting on this?
-        │
+        (risk.py — currently a minimal, honestly-labeled stub: every
+         decision type so far is simulation-only and reversible by
+         construction; a real blast-radius model is still open)
         ▼
-Human approval  — role-appropriate reviewer sees evidence, not just a conclusion
-        │
+Human approval  — a named approver records a decision + rationale
+        (repository.py::approve_decision/reject_decision — role-
+         appropriate reviewer is NOT yet enforced: approved_by is a
+         plain string today, RBAC is Milestone 9, not this stage)
         ▼
 Audit record  — decision, evidence, approver, outcome, timestamp — permanent
+        (the DecisionRecord row itself, models.py)
 ```
 
-Role-based permissions determine who can approve which class of recommendation; this is not implemented yet (`backend/app/security/` is empty — Milestone 7) but every upstream layer should assume it exists and route accordingly rather than exposing a "just do it" path.
+Role-based permissions determine who can *approve* which class of recommendation; that check is not implemented yet (`backend/app/security/` has the pipeline above but no RBAC — Milestone 9) but every upstream layer should assume it exists and route accordingly rather than exposing a "just do it" path. See ADR-0009's implementation note and `docs/ENGINEERING_ROADMAP.md` Milestone 7.
 
 ## Secrets and configuration
 
@@ -57,7 +63,7 @@ This checklist is intentionally mirrored in `README.md` and `CLAUDE.md` so it's 
 |---|---|
 | Prompt injection via tool/data output reaching an agent | Agent tool outputs are typed and schema-validated, not raw text an LLM call blindly trusts as instructions (`docs/AGENTIC_ARCHITECTURE.md`) |
 | Data integrity (bad/duplicate/out-of-order events corrupting state) | Event schema conventions — idempotency keys, explicit ordering by `occurred_at` (`docs/DATA_ARCHITECTURE.md`) |
-| Unauthorized approval of a governed recommendation | Role-based permissions at the Layer 5 approval gate (not yet implemented — Milestone 7) |
+| Unauthorized approval of a governed recommendation | The approval gate itself exists (Milestone 7 — `approve_decision`/`reject_decision`); role-based permissions on *who* may use it are not yet implemented — Milestone 9 |
 | Secret leakage via logs | Structured logging (`structlog`) should never log full `Settings` objects or raw connection strings; log field allow-listing is a Milestone 2 follow-up once there's more to log |
 | Dependency supply-chain risk | Dependencies pinned with version ranges in `pyproject.toml`; no unreviewed packages added without checking they're from a reputable source |
 

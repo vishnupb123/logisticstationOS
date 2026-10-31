@@ -1,6 +1,6 @@
 # ADR-0009: Human approval and governance
 
-**Status**: Accepted
+**Status**: Accepted; implemented (not revisited) by Milestone 7 — see "Implementation note" below.
 
 ## Context
 
@@ -33,3 +33,9 @@ This is the project's clearest non-negotiable principle, stated multiple times i
 ## Revisit conditions
 
 This governance stance is not expected to be revisited by convenience; it would only change via a deliberate, explicit decision with its own new ADR, not as a side effect of unrelated feature work.
+
+## Implementation note (2026-10-31): the governance pipeline, built
+
+Milestone 7 implements the pipeline this ADR describes (`backend/app/security/`): `policy_engine.py` (eligibility/constraint checks, rule-based by design — a policy engine that itself needed training would be the thing it's supposed to check), `risk.py` (a minimal, explicitly-labeled stub — every decision type so far only affects the digital twin, so "blast radius" is honestly `simulation_only` and reversible by construction; a real blast-radius model per the Consequences section above is still open, tracked in `docs/OPEN_QUESTIONS.md`), `repository.py` (the approval/audit persistence, `DecisionRecord`), and `decision_service.py` (the coordination logic connecting agent evidence, RL-environment-based candidate evaluation, and the policy engine).
+
+The structural guarantee this ADR calls for — "no path lets a recommendation become acted on without approval" — is enforced in code, not just documented: `record_observed_outcome` raises if the `DecisionRecord` isn't `APPROVED`, and `approve_decision`/`reject_decision` both raise if the record isn't still `PENDING_APPROVAL` (no re-deciding a decided record). RBAC (who is allowed to approve) remains Milestone 9 — `approved_by` today is a plain string, not a checked role, matching this ADR's own sequencing note above ("Layer 5... must exist before any agent/RL output is wired to anything beyond simulation," not "RBAC must exist first" — the approval *gate* exists now, role-checking who may use it is the remaining piece).

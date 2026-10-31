@@ -4,7 +4,7 @@ Instructions for AI coding assistants (Claude Code and others) working in this r
 
 ## What this project is
 
-StationOS is a local-first logistics operations intelligence platform. Milestones 1–6 (software foundation; Cycle-1 domain model and event infrastructure; data engineering and analytics; digital twin; agentic AI system — one agent; reinforcement-learning environment — one decision problem) are complete; Milestone 7 (agent and RL coordination) is next. Full context: `docs/PRODUCT_VISION.md`, `docs/OPERATIONAL_DOMAIN_MODEL.md`, `docs/SYSTEM_ARCHITECTURE.md`, `docs/ENGINEERING_ROADMAP.md`, and `docs/adr/`.
+StationOS is a local-first logistics operations intelligence platform. Milestones 1–7 (software foundation; Cycle-1 domain model and event infrastructure; data engineering and analytics; digital twin; agentic AI system — one agent; reinforcement-learning environment — one decision problem; agent and RL coordination/decision governance) are complete; Milestone 8 (predictive intelligence) is next. Full context: `docs/PRODUCT_VISION.md`, `docs/OPERATIONAL_DOMAIN_MODEL.md`, `docs/SYSTEM_ARCHITECTURE.md`, `docs/ENGINEERING_ROADMAP.md`, and `docs/adr/`.
 
 ## Hard rules
 
@@ -41,6 +41,10 @@ StationOS is a local-first logistics operations intelligence platform. Milestone
 - **Never claim an RL policy is "better" because its training reward went up, or because reward beat a baseline's reward.** Report the actual metric-contract outcome (e.g. jackpot backlog, stow throughput) a reward was designed to serve, not the reward itself — a reward's own shaping terms can dominate the number without the thing it was meant to proxy actually improving. This is not hypothetical: Milestone 6's PPO policy had higher reward than both baselines in 2 of 3 evaluated scenarios, but its jackpot-backlog outcome — the metric that matters — was the same or worse than the baselines' in every scenario (`docs/RL_ENVIRONMENT_SPEC.md` §"Evaluation protocol and results", ADR-0007's amendment). Always run the full baseline comparison across multiple seeds and at least one held-out scenario before reporting any result, per ADR-0007.
 - **A hard safety/anti-starvation constraint in an RL environment is enforced structurally in the environment, never left to the reward function to merely discourage.** `app/rl/env.py::AisleStowPriorityController` floors every per-aisle priority weight to `MIN_PRIORITY_WEIGHT` (never literal zero) so no aisle's stow priority can ever be fully starved by a policy's action, independent of whatever the reward happens to incentivize — per ADR-0009 and ADR-0007's "hard constraints... not reward penalties" stance.
 - **`ml/` holds regenerable trained-model artifacts and is gitignored** (`ml/*`, keeping only `.gitkeep`) — a trained policy `.zip` or an evaluation report JSON is reproducible from `scripts/train_rl_policy.py`/`scripts/run_rl_evaluation.py` plus a documented seed, not something to commit. If a result needs to be preserved for the record, put the numbers in a doc (as `docs/RL_ENVIRONMENT_SPEC.md` does), not the binary artifact.
+- **A `DecisionRecord`'s status only changes through `app/security/repository.py`'s functions, never by setting the field directly** — `approve_decision`/`reject_decision` refuse anything not `pending_approval`, and `record_observed_outcome` refuses anything not `approved`. This is what makes ADR-0009's "no path lets a recommendation become acted on without approval" a property of the code, not a convention someone could bypass by touching the model directly — don't add a shortcut that sets `status`/`observed_outcome` outside these functions, even for a quick fix or a script.
+- **The policy engine (`app/security/policy_engine.py`) and risk evaluation (`app/security/risk.py`) are deliberately simple and rule-based, not learned** — a policy engine that itself needed training would be the thing it's supposed to be checking. `risk.py` is an explicitly-labeled stub (every current decision type is `simulation_only`/reversible by construction, since nothing acts on a live system yet) — don't extend it into a general risk model without a deliberate decision to do so (tracked in `docs/OPEN_QUESTIONS.md`); that's Milestone 8/9 work, not a drive-by addition.
+- **The agent/RL decision-coordination layer (`app/security/decision_service.py`) never uses the trained PPO policy from Milestone 6, and that is deliberate, not an oversight.** Milestone 6's own evaluation found PPO's reward advantage never translated into a better jackpot-backlog outcome than the baselines — wiring it into a decision's candidate list would overstate its value. Candidates there are named, fixed priority-weight vectors (`app/rl/baselines.py::FixedWeightPolicy`) plus the existing static/rule-based baselines. Don't add the trained policy as a candidate without first revisiting `docs/RL_ENVIRONMENT_SPEC.md`'s honest finding and `docs/OPEN_QUESTIONS.md`'s "should the trained PPO policy ever be wired into an agent" row.
+- **RBAC does not exist yet — `approved_by` on a `DecisionRecord` is a plain string, not a checked role.** Don't build anything on top of `approve_decision` that assumes the caller's identity has already been authorized; that check is explicitly Milestone 9, not Milestone 7's scope (`docs/SECURITY_AND_GOVERNANCE.md`).
 
 ## Before implementing a new area of the system
 
@@ -76,6 +80,9 @@ python scripts/train_rl_policy.py --scenario ../simulation/scenarios/rl_stow_bal
     --timesteps 50000 --seed 1 --out ../ml/models/ppo_stow_balancing.zip
 python scripts/run_rl_evaluation.py --policy ../ml/models/ppo_stow_balancing.zip \
     --out ../data/processed/rl_evaluation_report.json
+
+# agent/RL decision coordination (needs the `rl` extra; needs Postgres + migrations applied)
+python scripts/run_decision_demo.py
 
 # or, from the repo root, the full stack:
 docker compose up -d
