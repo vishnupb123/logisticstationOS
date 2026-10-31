@@ -29,9 +29,9 @@ Status values: `unresolved` (no leaning yet), `leaning` (a tentative direction e
 
 | Question | Why it matters | Current leaning | Status |
 |---|---|---|---|
-| Which narrow decision problem is the first RL target? | Blocks all of Milestone 6 | Candidates listed in `docs/RL_ENVIRONMENT_SPEC.md` §"Start narrow" — not chosen | `unresolved` |
+| Which narrow decision problem is the first RL target? | Blocked Milestone 6 design start | **Resolved 2026-10-31** by project-owner decision: aisle-level stow capacity and workload balancing under variable inbound flow (ADR-0007 amendment, `docs/RL_ENVIRONMENT_SPEC.md`). State/action/reward formalization remains open Milestone 6 work. | `resolved` |
 | How is the digital twin calibrated/validated against *something* if there's no real operational data to compare against (by design, per the synthetic-data constraint)? | Affects whether "calibrated" can mean anything more than "internally consistent" | Lean toward validating internal consistency (conservation of parcels, queueing-theory sanity checks) rather than claiming real-world fidelity | `leaning` |
-| Exact reward function for the first RL problem | Reward design is explicitly "open" in the RL spec | None | `blocked` — depends on the narrow-problem choice above |
+| Exact reward function for the first RL problem (aisle-level stow capacity/workload balancing) | Reward design is explicitly "open" in the RL spec; must be defined against `validated`/clearly-labeled `proposed` metrics only | None — unblocked now that the problem itself is chosen, but still genuine Milestone 6 design work | `unresolved` |
 
 ## Governance / security
 

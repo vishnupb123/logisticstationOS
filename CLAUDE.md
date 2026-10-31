@@ -4,14 +4,14 @@ Instructions for AI coding assistants (Claude Code and others) working in this r
 
 ## What this project is
 
-StationOS is a local-first logistics operations intelligence platform in its foundation phase. Full context: `docs/PRODUCT_VISION.md`, `docs/OPERATIONAL_DOMAIN_MODEL.md`, `docs/SYSTEM_ARCHITECTURE.md`, and `docs/adr/`.
+StationOS is a local-first logistics operations intelligence platform. Milestone 1 (software foundation) is complete; Milestone 2 (domain model and event infrastructure) is next. Full context: `docs/PRODUCT_VISION.md`, `docs/OPERATIONAL_DOMAIN_MODEL.md`, `docs/SYSTEM_ARCHITECTURE.md`, `docs/ENGINEERING_ROADMAP.md`, and `docs/adr/`.
 
 ## Hard rules
 
 1. **Never introduce real operational data.** All parcel IDs, employee names, customer data, screenshots, or proprietary schemas are forbidden — synthetic data only. See `docs/SECURITY_AND_GOVERNANCE.md` §"Public repository safety". If asked to add real data, decline and explain why.
 2. **Never invent proprietary metric formulas.** Metrics like DEA, OTD, FPY, FSAF are defined in `docs/OPERATIONAL_DOMAIN_MODEL.md` with status `requires_validation` where the exact calculation is unknown. Do not fill in a numerator/denominator you weren't given — propose it as a draft explicitly marked `proposed`, not `validated`.
 3. **No autonomous control of physical operations, workforce, or dispatch.** StationOS is a decision-support system (see ADR-0009). Anything that would take an operationally consequential action must route through a human-approval gate, not execute directly.
-4. **Don't jump ahead of the roadmap.** `docs/ENGINEERING_ROADMAP.md` defines milestone sequencing (domain models → events → analytics → digital twin → agents → RL → frontend → governance). If asked to build something from a later milestone, flag the dependency rather than silently scaffolding it out of order.
+4. **Don't jump ahead of the roadmap.** `docs/ENGINEERING_ROADMAP.md` defines ten sequenced milestones (foundation → domain/events → analytics → digital twin → agents → RL → agent/RL coordination → predictive intelligence → governance → frontend). If asked to build something from a later milestone, flag the dependency rather than silently scaffolding it out of order. Don't attempt more than one milestone per session.
 5. **No premature infrastructure.** No Kafka until an actual streaming requirement justifies it (ADR-0004). No microservices split (ADR stack assumes a modular monolith) unless a new ADR revisits that. No mandatory cloud service (Snowflake, managed Postgres, etc.) for foundational workflows — see ADR-0001 and ADR-0010.
 6. **LLM-provider independence.** Application code must go through the provider abstraction described in ADR-0008, not call a specific vendor SDK directly from agent/business logic.
 
@@ -38,6 +38,9 @@ pip install -e ".[dev]"
 pytest              # run tests
 ruff check .        # lint
 uvicorn app.main:app --reload   # run the API locally
+
+# or, from the repo root, the full stack:
+docker compose up -d
 ```
 
-There is no CI workflow yet (`.github/workflows/` is empty) and no `docker-compose.yml` yet — both are Milestone 2 items, tracked in `docs/ENGINEERING_ROADMAP.md`.
+CI (`.github/workflows/ci.yml`) runs `ruff check` and `pytest` against a real Postgres service container on every push/PR to `main` — run both locally before pushing, don't rely on CI to catch it first. After any code change, actually run the tests and report what happened; don't report a change as done on the basis that it "should work."

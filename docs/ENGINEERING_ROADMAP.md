@@ -1,60 +1,82 @@
 # Engineering Roadmap
 
-Sequencing follows the dependency chain in `docs/PRODUCT_VISION.md` §"Capability arc": reliable data before intelligence, a calibrated twin before RL, agents before governed coordination. Each milestone lists a goal, deliverables, exit criteria, and explicit non-goals — a milestone is not "done" by vibes, and it does not sneak in work from a later milestone.
+> **Revision note (2026-10-31)**: this roadmap was rewritten to adopt the more detailed ten-milestone implementation plan provided directly by the project owner during the implementation-phase handoff, superseding this document's original nine-milestone (M0–M8) sketch from the architecture phase. The underlying sequencing logic is unchanged — reliable data before intelligence, a calibrated twin before RL, agents before governed coordination (`docs/PRODUCT_VISION.md` §"Capability arc") — this revision mainly adds detail, splits the original governance milestone into two (M7, M9), and adds a predictive-intelligence milestone (M8) that the vision always implied but the original roadmap never gave its own slot.
 
-## Milestone 0 — Foundation (this phase, mostly complete)
-**Goal**: architecture, documentation, and a minimal runnable skeleton.
-**Delivered**: `docs/` (vision, domain model, architecture, data, agentic, digital twin, RL, security, roadmap, open questions), `docs/adr/`, `HANDOFF.md`, `CLAUDE.md`, `README.md`, `.gitignore`; backend skeleton (FastAPI app, settings, structured logging, Postgres + DuckDB connectors, `/health` + `/health/ready`, Alembic wiring, pytest suite).
-**Exit criteria**: this document set is internally consistent; `pytest` passes in `backend/`; nothing is implemented beyond what's documented here.
+Each milestone lists a goal, deliverables, exit criteria, and explicit non-goals. A milestone is not "done" by vibes, and it does not borrow work from a later milestone. Only one milestone is attempted per working session; a session starts by checking `HANDOFF.md` and this file to identify the next incomplete milestone.
+
+## Milestone 1 — Software foundation — ✅ complete (2026-10-31)
+
+**Goal**: repository structure, a minimal runnable local-first backend, and a working dev loop.
+**Delivered**: `backend/` FastAPI app (settings, structured logging, Postgres + DuckDB connectors, `/health` + `/health/ready`, Alembic wiring, pytest suite); `docker-compose.yml` + `backend/Dockerfile` bringing up Postgres + the API together (verified end-to-end — `/health/ready` reports both dependencies `ok` when run via Compose); `.github/workflows/ci.yml` running `ruff check` + `pytest` against a real Postgres service container on every push/PR; `backend/.env.example`; the full `docs/` architecture set and ten ADRs from the architecture phase.
+**Exit criteria**: `pytest` passes locally and in CI; `docker compose up` brings up a working stack verified by hitting `/health/ready`; `ruff check .` is clean; nothing beyond this scaffold is implemented.
 **Non-goals**: any domain model, event, agent, simulation, or RL code.
+**Note**: `docker-compose.yml` remaps host ports to 5433/8010 (not 5432/8000) because this development machine already had unrelated containers bound to the defaults — change it back if that's not true in your environment.
 
-## Milestone 1 — First commit and CI
-**Goal**: get the existing work under version control with a minimal safety net.
-**Deliverables**: initial commit of the foundation-phase tree; a GitHub Actions workflow running `ruff check` and `pytest` on push/PR; a `docker-compose.yml` bringing up PostgreSQL for local dev.
-**Exit criteria**: CI is green on a clean clone; `docker compose up` + `pytest` passes with a real Postgres.
-**Non-goals**: deployment pipeline beyond CI checks; any cloud environment.
+## Milestone 2 — Domain model and event infrastructure
 
-## Milestone 2 — Domain model and event ingestion
-**Goal**: Layer 1 + the writable half of Layer 2.
-**Deliverables**: SQLAlchemy domain models for the entities in `docs/OPERATIONAL_DOMAIN_MODEL.md` §2 (first slice: truck, parcel, induct event, sort/hamper state — not the full entity list at once); Alembic migrations for them; an event schema (per `docs/DATA_ARCHITECTURE.md`) with idempotency/correlation/versioning fields; a repository layer; a synthetic event generator producing fixture data for `data/synthetic/`.
-**Exit criteria**: a synthetic truck-arrival-through-stow event stream can be ingested, persisted, and read back via the repository layer, with duplicate/out-of-order events handled per spec.
+**Goal**: Layer 1 + the writable half of Layer 2 (`docs/SYSTEM_ARCHITECTURE.md`).
+**Deliverables**: SQLAlchemy domain models for the entities in `docs/OPERATIONAL_DOMAIN_MODEL.md` §2 and the implementation brief's expanded list (station, truck, parcel, parcel lifecycle, induct/scan/sort/jackpot/stow events, bag, aisle, hamper, stower resource, high-value exception, cart, route, staging location, dispatch wave, van, dispatch event, return event) — first slice: Cycle 1 (truck → induct → sort → stow), not the full list at once; Alembic migrations for them; a typed event model (`event_id`, `event_type`, `entity_id`, `occurred_at`, `recorded_at`, `source`, `correlation_id`, `idempotency_key`, `schema_version`, `payload`, `provenance`) per `docs/DATA_ARCHITECTURE.md`; explicit handling of duplicate, out-of-order, delayed, missing, and conflicting events, and of invalid payloads and replay; a repository layer; a synthetic event generator for `data/synthetic/`.
+**Exit criteria**: a synthetic truck-arrival-through-stow event stream can be ingested, persisted, and read back idempotently, with duplicate/out-of-order/replayed events handled per spec and covered by tests. Virtual (recorded) state and "physical" (simulated-source) state are modeled as distinct, reconcilable concepts — not assumed to always agree.
 **Non-goals**: analytics, agents, simulation, or UI.
 
-## Milestone 3 — Analytical pipeline
+## Milestone 3 — Data engineering and analytics
+
 **Goal**: the read half of Layer 2 + Layer 3's data foundation.
-**Deliverables**: Parquet export of the Milestone 2 event log; dbt Core project modelling it into DuckDB; the `proposed`-status metrics from the metric contract catalog (WIPS, induct throughput, jackpot volume, dwell time, stow throughput) computed and queryable; data-quality checks per `docs/DATA_ARCHITECTURE.md` §"Data quality".
-**Exit criteria**: a metric can be computed from synthetic data end-to-end and its contract marked with real (not placeholder) values for required source events and data-quality requirements.
-**Non-goals**: the organization-specific metrics still marked `requires_validation` in `docs/OPERATIONAL_DOMAIN_MODEL.md` — they stay unimplemented until validated, not approximated.
+**Deliverables**: Parquet export of the Milestone 2 event log; a dbt Core project with layered models (raw → cleaned → curated → operational intelligence) against DuckDB; dbt tests for null values, uniqueness, referential integrity, valid event types, timestamp validity, and metric-contract requirements; the `proposed`-status metrics from `docs/OPERATIONAL_DOMAIN_MODEL.md` §4.1 (WIPS, induct throughput, jackpot volume, dwell time, stow throughput) computed and queryable.
+**Exit criteria**: a metric can be computed from synthetic data end-to-end, its contract updated with real (not placeholder) source events and data-quality requirements, and its dbt tests pass.
+**Non-goals**: the organization-specific metrics still marked `requires_validation` (DEA, OTD, Sort Compliance, FPY, FSAF, Timely Staged, Route readiness) — they stay unimplemented until validated, never approximated. No dbt model should duplicate application logic without a clear analytical purpose.
 
-## Milestone 4 — Digital twin baseline
-**Goal**: a calibrated SimPy model of Cycle 1 (induct → sortation → stow).
-**Deliverables**: scenario configuration format; the "normal volume" and "delayed inbound trucks" scenarios from `docs/DIGITAL_TWIN_SPEC.md`; simulation output in the same structural shape as Milestone 3's analytical tables, so simulated and real data are comparable.
-**Exit criteria**: two scenarios run reproducibly (same seed → same output); output is queryable through the same analytical path as real data.
-**Non-goals**: Cycle 2 (Pick & Stage/dispatch) simulation, RL, or the full ten-scenario catalog.
+## Milestone 4 — Digital twin
 
-## Milestone 5 — Agent framework proof of concept
-**Goal**: one agent, fully governed, end to end.
-**Deliverables**: the orchestration state machine (ADR-0005); the model-provider abstraction (ADR-0008) with at least one real provider implementation; the Flow Intelligence Agent (narrowest-scoped agent, since Cycle 1 data exists from Milestone 2–4) with its full contract per `docs/AGENTIC_ARCHITECTURE.md`; evidence-category-tagged output.
-**Exit criteria**: given a synthetic Cycle 1 scenario with an induced jackpot backlog, the agent produces a correctly-categorized finding (not a recommendation yet) citing real evidence from Milestones 2–4's data.
-**Non-goals**: the full agent roster, multi-agent orchestration, or any recommendation requiring Layer 5 approval (Layer 5 doesn't exist yet).
+**Goal**: a SimPy discrete-event model of the full operational lifecycle (`docs/DIGITAL_TWIN_SPEC.md`), starting with Cycle 1.
+**Deliverables**: scenario configuration format; resources/entities for truck arrival, inbound unloading, induct, classification, sortation, hamper queues, stowing, jackpot, high-value processing (Cycle 1 first; Pick & Stage, route staging, dispatch waves, returns, planning follow once Cycle 1 is validated); the "normal operations" and "delayed inbound trucks" scenarios at minimum; deterministic, seeded reproducibility; conservation checks (parcels must not silently disappear from the simulated lifecycle).
+**Exit criteria**: two scenarios run reproducibly (same seed → same output); a conservation/invariant test suite passes; simulation output is structured to match Milestone 3's analytical table shape so simulated and real data are comparable through the same pipeline.
+**Non-goals**: the full ten-scenario catalog, RL, or any claim that the simulator is calibrated to real-world performance — there is no real operational data to validate against, by design (`docs/DIGITAL_TWIN_SPEC.md` "Reproducibility" / ADR-0006 risk note).
 
-## Milestone 6 — RL environment skeleton
-**Goal**: answer "what is the first decision problem" and stand up a minimal environment for it.
-**Deliverables**: resolution of the open question in `docs/RL_ENVIRONMENT_SPEC.md` (which narrow problem); a Gymnasium environment wrapping the Milestone 4 twin; a rule-based baseline policy; one trained PPO (or justified alternative) policy; an evaluation report comparing the two on held-out scenario variations.
-**Exit criteria**: the evaluation report exists, is reproducible, and makes no claim beyond what the simulation actually showed.
-**Non-goals**: applying the policy to anything beyond the twin; multi-agent RL; any claim of real-world performance.
+## Milestone 5 — Agentic AI system
 
-## Milestone 7 — Governance layer and remaining agents
-**Goal**: Layer 5 for real, plus the rest of the agent roster.
-**Deliverables**: policy engine, constraint validation, risk evaluation, human-approval workflow, RBAC, audit records (`docs/SECURITY_AND_GOVERNANCE.md`); Station Orchestrator, Planning, Investigation, Dispatch Intelligence, Reconciliation and Returns agents.
-**Exit criteria**: a recommendation from any agent cannot reach "acted on" status without passing through the full governance pipeline with an audit trail.
-**Non-goals**: autonomous execution of any approved recommendation against a real system (there is no real system to act on yet).
+**Goal**: the hierarchical agent roster from `docs/AGENTIC_ARCHITECTURE.md`, starting with one agent end to end.
+**Deliverables**: the orchestration state machine (ADR-0005); the `LLMProvider` abstraction (ADR-0008) with at least one real provider adapter; the Flow Intelligence Agent (narrowest-scoped, since Cycle 1 data exists from Milestones 2–4) with its full contract (typed input/output, explicit tool permissions, persistent state, checkpointing, retry/timeout, execution tracing, evaluation tests); evidence-category-tagged output (`observation | calculated | inferred | hypothesis | prediction | recommendation`).
+**Exit criteria**: given a synthetic Cycle-1 scenario with an induced jackpot backlog, the agent produces a correctly-categorized finding (not a recommendation) citing real evidence from Milestones 2–4's data, with evaluation tests passing.
+**Non-goals**: the full agent roster (Station Orchestrator, Investigation, Dispatch Intelligence, Planning, Reconciliation and Returns follow once this one agent's contract pattern is proven), multi-agent orchestration, or any recommendation requiring Layer 5 approval (Layer 5 doesn't exist yet). The LLM interprets, investigates, coordinates, and explains; it never performs a calculation that the analytics layer should do deterministically.
 
-## Milestone 8 — Operational experience
-**Goal**: Layer 6, a usable command centre.
-**Deliverables**: React/TypeScript frontend — dashboards for the metrics catalog, an investigation workspace surfacing agent findings with evidence categories visible, a simulation workspace for running digital-twin scenarios, a decision-history view backed by Milestone 7's audit records.
-**Non-goals**: this is explicitly the last milestone in this roadmap — nothing here should get built early just because "it would be nice to see something."
+## Milestone 6 — Reinforcement-learning environment
+
+**Goal**: a Gymnasium-compatible RL environment for one narrow, bounded decision problem.
+**First problem (decided — see ADR-0007 amendment and `docs/RL_ENVIRONMENT_SPEC.md`)**: **aisle-level stow capacity and workload balancing under variable inbound flow.** Candidate state variables: aisle workload, hamper occupancy, stower availability, induct throughput, jackpot backlog, remaining processing time, capacity constraints, demand uncertainty. Candidate actions: workload allocation, eligible-capacity redistribution, stow-resource allocation within permitted constraints, priority selection for eligible work. Exact state/action/reward definitions are still open design work for this milestone, not decided by naming the problem.
+**Deliverables**: the Gymnasium environment wrapping the Milestone 4 twin; hard constraints enforced structurally (action masking), never as reward penalties — no action that would violate physical, safety, or labour constraints is ever offered to the policy; a static baseline; a rule-based baseline; a PPO-trained candidate policy (PPO is the starting candidate per ADR-0007, not a mandated solution); an evaluation report comparing all three across multiple seeds and held-out scenario variations, measuring throughput, queue lengths, backlog, resource utilisation, constraint violations, stability, and robustness.
+**Exit criteria**: the evaluation report exists, is reproducible, uses multiple seeds and held-out scenarios, and makes no claim beyond what actually ran — in particular, never "RL is better" merely because training reward increased.
+**Non-goals**: applying the policy to anything beyond the twin; multi-agent RL; any real-world performance claim.
+
+## Milestone 7 — Agent and RL coordination
+
+**Goal**: a controlled decision interface connecting the agentic layer, the RL layer, and a policy engine, without granting autonomous control.
+**Deliverables**: the agentic system can investigate, formulate a decision problem, request a simulation, request policy evaluation, compare candidate interventions, and explain results; the RL system can evaluate permitted actions, produce candidate policies, and report expected outcomes with uncertainty; a policy engine validates constraints on anything proposed; human approval is required before any consequential decision is treated as "acted on"; decision context, evidence, candidate actions, simulation results, policy version, approval, final decision, and observed outcome are all persisted.
+**Exit criteria**: a full decision record (context → evidence → candidates → simulation/policy evaluation → approval → outcome) can be produced and queried end to end for a synthetic scenario, with no path that lets a recommendation become an "acted on" decision without passing through approval.
+**Non-goals**: autonomous operational control, under any confidence threshold — see ADR-0009, which this milestone implements, not revisits.
+
+## Milestone 8 — Predictive intelligence
+
+**Goal**: carefully scoped predictive models, each with an honest account of its own limitations.
+**Candidate areas**: inbound volume forecasting, stow bottleneck prediction, jackpot accumulation risk, route readiness prediction, dispatch delay risk, parcel reconciliation anomalies.
+**Deliverables**: for each model built — a dataset definition, documented feature provenance, temporal (not random) train/test validation to avoid leakage, a baseline model, an evaluation report, versioning, and a drift-monitoring plan. Predictions carry uncertainty and are tagged as `prediction` per the evidence-category scheme (`docs/AGENTIC_ARCHITECTURE.md`), never presented as observations.
+**Exit criteria**: at least one predictive model (start with the one best supported by Milestone 2–4 data) has a documented dataset, passes temporal validation without leakage, and reports evaluation metrics with stated limitations.
+**Non-goals**: deploying a predictive model's output as an unflagged "fact"; building all six candidate areas before validating the pattern on one.
+
+## Milestone 9 — Governance and reliability
+
+**Goal**: the rest of Layer 5, and cross-cutting reliability that earlier milestones deferred.
+**Deliverables**: role-based access control and permission boundaries; secure configuration review; audit records and decision provenance (building on Milestone 7's persisted decision records); model and policy versioning; systematic error handling and agent retry policy; idempotency review across the event/agent/decision paths; data validation; observability (revisit OpenTelemetry here — `docs/SYSTEM_ARCHITECTURE.md` §"Observability" deferred it until there was more than one process/hop worth tracing; by now there is); shadow-mode evaluation support, keeping recommendations visibly separate from anything "executed."
+**Exit criteria**: a recommendation from any agent or RL policy cannot reach "acted on" status without RBAC-checked human approval and a permanent audit trail; shadow-mode runs produce output clearly labeled as not-executed.
+**Non-goals**: autonomous execution of any approved recommendation against a real system — there still isn't one to act on.
+
+## Milestone 10 — Operational command centre
+
+**Goal**: Layer 6, a usable React/TypeScript command centre.
+**Deliverables**: station overview; live-or-simulated operational state (clearly labeled which); induct and sortation; stow and jackpot; high-value processing; Pick & Stage; dispatch waves; returns; AI investigations view (evidence categories visible, not flattened); digital-twin scenario runner; RL policy comparison view; decision and audit history (backed by Milestone 7/9's records).
+**Exit criteria**: every view states the source and status of each metric it shows (synthetic/simulated vs. whatever "real" means at that point) — simulated data is never presented as live operational information.
+**Non-goals**: this is deliberately the last milestone — nothing here gets built early just because "it would be nice to see something."
 
 ## What's deliberately not sequenced yet
 
-Cloud warehouse adapters (ADR-0010), Kafka-style streaming (ADR-0004), additional LLM providers beyond the first, and the full ten-scenario digital-twin catalog are all real future work but are not placed on the roadmap above because doing so now would be sequencing work ahead of the need that justifies it. They're tracked instead in `docs/OPEN_QUESTIONS.md` and the relevant ADR's "revisit conditions."
+Cloud warehouse adapters (ADR-0010), Kafka-style streaming (ADR-0004), additional LLM providers beyond the first, and the full ten-scenario digital-twin catalog remain real future work but aren't placed on the roadmap above, because doing so now would sequence work ahead of the need that justifies it. Tracked instead in `docs/OPEN_QUESTIONS.md` and the relevant ADR's "revisit conditions."

@@ -16,12 +16,21 @@ Gymnasium (environment interface) + Stable-Baselines3 (algorithm implementations
 
 ## Start narrow
 
-The roadmap explicitly rejects "optimise the whole station" as a v1 target. A defensible starting decision problem is scoped to one bounded choice with a clear reward signal and a feasible state space — for example (illustrative candidates, **not decided**):
+The roadmap explicitly rejects "optimise the whole station" as a v1 target.
 
+**First problem (decided 2026-10-31, see ADR-0007 amendment): aisle-level stow capacity and workload balancing under variable inbound flow.** The project owner selected this directly rather than it being derived from twin calibration, which is how ADR-0007 originally envisioned the selection happening. Naming the problem does not settle its formalization — the state/action/reward design below is still open Milestone 6 work, and if Milestone 4's calibrated twin shows the problem is mis-posed as scoped, that goes back to ADR-0007, not a silent substitution.
+
+Two other candidates were considered during the architecture phase and are not pursued now, but are kept here in case the selected problem proves intractable and a fallback is needed:
 - Stower-to-hamper allocation under jackpot pressure during induct.
 - Wave-sequencing / cart-release timing during Pick & Stage.
 
-Selecting the actual first problem is an open question (`docs/OPEN_QUESTIONS.md`) to resolve against the calibrated digital twin, not in the abstract.
+## Candidate state/action variables (illustrative, not finalized)
+
+Carried over from the project owner's problem framing, to ground Milestone 6 design work — none of this is committed until the state/action space is actually formalized against the calibrated twin:
+
+- **Candidate state variables**: aisle workload, hamper occupancy, stower availability, induct throughput, jackpot backlog, remaining processing time, capacity constraints, demand uncertainty.
+- **Candidate actions**: workload allocation, eligible-capacity redistribution, stow-resource allocation within permitted constraints, priority selection for eligible work.
+- **Explicitly excluded from the action space**: anything that would violate physical, safety, or labour constraints — these are never offered as selectable actions, not merely discouraged via reward (see "Hard constraints" below).
 
 ## Design space (open, not finalized)
 
@@ -36,7 +45,7 @@ Selecting the actual first problem is an open question (`docs/OPEN_QUESTIONS.md`
 | Simulation calibration | Depends on `docs/DIGITAL_TWIN_SPEC.md` reaching a validated baseline first |
 | Generalisation / robustness | Open — evaluate across the scenario catalog, not just the scenario trained on |
 | Reproducibility | Not open — seeded runs, versioned configs, logged exactly as in the digital twin (`docs/DIGITAL_TWIN_SPEC.md` §"Reproducibility") |
-| Baseline comparison | Not open — every trained policy is compared against (a) a rule-based heuristic and (b) current simulated "do nothing differently" behaviour, before any claim of improvement |
+| Baseline comparison | Not open — every trained policy is compared against (a) a static baseline (no reallocation), (b) a rule-based heuristic baseline, and (c) held-out scenario performance, using multiple seeds, before any claim of improvement. Training reward going up is never itself treated as evidence of improvement. |
 
 ## Evaluation protocol (draft)
 
