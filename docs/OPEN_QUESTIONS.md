@@ -39,6 +39,14 @@ Status values: `unresolved` (no leaning yet), `leaning` (a tentative direction e
 | PPO trained against one fixed world instantiation (same scenario seed every training episode, only the policy's own action sampling varies) — does training with randomized/varied world seeds generalize better? | PPO's advantage vanished on the `tighter_capacity` held-out scenario; domain randomization during training is a standard technique for exactly this failure mode, not yet tried here | Try training across a distribution of seeds/scenario parameters next, before concluding the problem itself is intractable | `unresolved` |
 | Should the trained PPO policy ever be wired into an agent as evidence (`docs/RL_ENVIRONMENT_SPEC.md` §"Relationship to the agentic layer")? | The current policy isn't demonstrably better than the rule-based baseline on the metric that matters — citing it as agent evidence now would overstate its value. Milestone 7 built the agent/RL coordination mechanism (`app/security/decision_service.py`) without using PPO at all, deliberately, reaffirming this | Not until the reward-design/generalization questions above are revisited with a clearer positive (or honestly negative) result | `leaning` |
 
+## Predictive intelligence
+
+| Question | Why it matters | Current leaning | Status |
+|---|---|---|---|
+| Should the jackpot-risk prediction (`app/predictive/jackpot_risk/`) ever be wired into an agent or the decision-governance pipeline as evidence? | The model has real signal (0.857 ROC-AUC on held-out episodes) but is trained on one scenario family of synthetic data, with moderate degradation on held-out scenario variations (0.72-0.73 ROC-AUC) — citing it as agent/decision evidence now would present a first, narrow result as more validated than it is | Not until it's evaluated against more scenario diversity, and/or a second predictive candidate area exists to compare the integration pattern against | `leaning` |
+| Should the other five Milestone 8 candidate areas (inbound volume forecasting, stow bottleneck prediction, route readiness, dispatch delay risk, parcel reconciliation anomalies) be built next? | Route readiness and dispatch delay risk need Cycle 2 data that doesn't exist yet; the others are plausible but weren't attempted this milestone per its own "validate the pattern on one" non-goal | Build the next one only when a future milestone's own scope calls for it, not speculatively | `unresolved` |
+| Real drift-monitoring implementation (beyond the written plan in `docs/PREDICTIVE_INTELLIGENCE_SPEC.md`) | No live/production inference loop exists yet to monitor — same reasoning OpenTelemetry was deferred (`docs/SYSTEM_ARCHITECTURE.md` §Observability) | Build once a real serving path exists, using the already-specified plan, not before | `unresolved` |
+
 ## Governance / security
 
 | Question | Why it matters | Current leaning | Status |

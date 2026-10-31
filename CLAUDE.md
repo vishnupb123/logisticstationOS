@@ -4,7 +4,7 @@ Instructions for AI coding assistants (Claude Code and others) working in this r
 
 ## What this project is
 
-StationOS is a local-first logistics operations intelligence platform. Milestones 1–7 (software foundation; Cycle-1 domain model and event infrastructure; data engineering and analytics; digital twin; agentic AI system — one agent; reinforcement-learning environment — one decision problem; agent and RL coordination/decision governance) are complete; Milestone 8 (predictive intelligence) is next. Full context: `docs/PRODUCT_VISION.md`, `docs/OPERATIONAL_DOMAIN_MODEL.md`, `docs/SYSTEM_ARCHITECTURE.md`, `docs/ENGINEERING_ROADMAP.md`, and `docs/adr/`.
+StationOS is a local-first logistics operations intelligence platform. Milestones 1–8 (software foundation; Cycle-1 domain model and event infrastructure; data engineering and analytics; digital twin; agentic AI system — one agent; reinforcement-learning environment — one decision problem; agent and RL coordination/decision governance; predictive intelligence — one model) are complete; Milestone 9 (governance and reliability) is next. Full context: `docs/PRODUCT_VISION.md`, `docs/OPERATIONAL_DOMAIN_MODEL.md`, `docs/SYSTEM_ARCHITECTURE.md`, `docs/ENGINEERING_ROADMAP.md`, and `docs/adr/`.
 
 ## Hard rules
 
@@ -18,7 +18,7 @@ StationOS is a local-first logistics operations intelligence platform. Milestone
 ## Conventions
 
 - **Backend**: Python 3.11+, FastAPI, Pydantic v2, SQLAlchemy 2.0, Alembic, structlog. Linting via `ruff` (config in `backend/pyproject.toml`). Tests via `pytest` under `backend/tests/`.
-- **Modular monolith**: one deployable backend, strict internal module boundaries (`domain`, `events`, `repositories`, `services`, `api`, `orchestration`, `agents`, `rl`, `simulation`, `analytics`, `security`) per `docs/SYSTEM_ARCHITECTURE.md`. A module only imports from layers below it in that architecture doc, never sideways into another vertical's internals.
+- **Modular monolith**: one deployable backend, strict internal module boundaries (`domain`, `events`, `repositories`, `services`, `api`, `orchestration`, `agents`, `rl`, `simulation`, `analytics`, `security`, `predictive`) per `docs/SYSTEM_ARCHITECTURE.md`. A module only imports from layers below it in that architecture doc, never sideways into another vertical's internals.
 - **Config**: all configuration via environment variables / `.env` through `app/core/config.py::Settings`. Never hardcode credentials or connection strings elsewhere.
 - **Events**: every domain event needs `event_id`, `idempotency_key`, `correlation_id`, `schema_version`, `occurred_at`, `provenance`, and `source_kind`, per `docs/DATA_ARCHITECTURE.md`. There is one append-only `events` table (`app/events/models.py`), not one table per event type — don't add a second events table for a new event type, add a payload schema to `app/events/schemas.py::EVENT_PAYLOAD_SCHEMAS` instead.
 - **Current state is a projection, never written directly.** A `Parcel`/`Truck` row's mutable fields (`lifecycle_state`, `classification`, `current_aisle_id`, `bag_id`, `status`, ...) are rebuilt by replaying that entity's event history (`app/services/event_ingestion.py`) — don't set them by hand anywhere else, even for a quick fix. If the projection logic is wrong, fix the projector, not the symptom at a call site.
@@ -45,6 +45,9 @@ StationOS is a local-first logistics operations intelligence platform. Milestone
 - **The policy engine (`app/security/policy_engine.py`) and risk evaluation (`app/security/risk.py`) are deliberately simple and rule-based, not learned** — a policy engine that itself needed training would be the thing it's supposed to be checking. `risk.py` is an explicitly-labeled stub (every current decision type is `simulation_only`/reversible by construction, since nothing acts on a live system yet) — don't extend it into a general risk model without a deliberate decision to do so (tracked in `docs/OPEN_QUESTIONS.md`); that's Milestone 8/9 work, not a drive-by addition.
 - **The agent/RL decision-coordination layer (`app/security/decision_service.py`) never uses the trained PPO policy from Milestone 6, and that is deliberate, not an oversight.** Milestone 6's own evaluation found PPO's reward advantage never translated into a better jackpot-backlog outcome than the baselines — wiring it into a decision's candidate list would overstate its value. Candidates there are named, fixed priority-weight vectors (`app/rl/baselines.py::FixedWeightPolicy`) plus the existing static/rule-based baselines. Don't add the trained policy as a candidate without first revisiting `docs/RL_ENVIRONMENT_SPEC.md`'s honest finding and `docs/OPEN_QUESTIONS.md`'s "should the trained PPO policy ever be wired into an agent" row.
 - **RBAC does not exist yet — `approved_by` on a `DecisionRecord` is a plain string, not a checked role.** Don't build anything on top of `approve_decision` that assumes the caller's identity has already been authorized; that check is explicitly Milestone 9, not Milestone 7's scope (`docs/SECURITY_AND_GOVERNANCE.md`).
+- **A predictive model's `FEATURE_COLUMNS` must earn its place — a feature that's suspiciously predictive is a reason to check its coefficient/importance before trusting it, not a reason to celebrate.** Milestone 8 shipped a jackpot-risk model whose first feature set included `trucks_remaining`/`parcels_inducted` — measured at correlation -1.0 in the shipped (fixed-arrival-schedule) scenario, acting as a trivial "how far into the run are we" clock that inflated accuracy from a genuine 0.78 to a misleading 0.96. They're still computed per row (`app/predictive/jackpot_risk/dataset.py::ALL_COLUMNS`) for diagnostics, but deliberately excluded from `FEATURE_COLUMNS`. Don't add a feature back into a model's actual input set without checking it isn't just a proxy for which scenario/moment-in-a-fixed-schedule this is.
+- **A predictive model's output is never wired into an agent or the decision-governance pipeline as evidence without a deliberate decision to do so** — same standard Milestone 6/7 set for the trained RL policy. `app/predictive/jackpot_risk/schemas.py::to_finding` exists and produces a correctly-tagged `prediction` Finding, but nothing calls it from `app/agents/` or `app/security/decision_service.py` yet; see `docs/OPEN_QUESTIONS.md`.
+- **Temporal train/test validation for synthetic episodic data means splitting by episode/seed, in a fixed order, never by shuffling individual rows** — `app/predictive/jackpot_risk/dataset.py::temporal_train_test_split` raises if `train_seeds`/`test_seeds` overlap. There's no real calendar timestamp on a synthetic episode, so ascending seed order is an explicit, documented stand-in for "earlier vs. later," not a claim that seed order is calendar time — don't present it as more than that stand-in.
 
 ## Before implementing a new area of the system
 
@@ -83,6 +86,12 @@ python scripts/run_rl_evaluation.py --policy ../ml/models/ppo_stow_balancing.zip
 
 # agent/RL decision coordination (needs the `rl` extra; needs Postgres + migrations applied)
 python scripts/run_decision_demo.py
+
+# predictive intelligence (needs the `predictive` extra: pip install -e ".[dev,predictive]"); no database needed
+python scripts/train_jackpot_risk_model.py --scenario ../simulation/scenarios/rl_stow_balancing.yaml \
+    --train-seeds 1-40 --test-seeds 41-60 \
+    --model-out ../ml/models/jackpot_risk_model.joblib \
+    --report-out ../data/processed/jackpot_risk_evaluation_report.json
 
 # or, from the repo root, the full stack:
 docker compose up -d

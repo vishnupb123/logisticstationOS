@@ -10,9 +10,9 @@ StationOS models a **fictional** delivery station ("Station NOVA-1") using **syn
 
 This project is not affiliated with, endorsed by, or built on confidential data from any employer or company. It does not integrate with any real operator's systems. Operational terminology (induct, sortation, stow, dispatch, etc.) reflects generic parcel-logistics industry concepts, not a verified replica of any specific organization's proprietary process. See [`docs/SECURITY_AND_GOVERNANCE.md`](docs/SECURITY_AND_GOVERNANCE.md) §"Public repository safety" before contributing real-world data of any kind — don't.
 
-## Current status: Milestones 1–7 complete (foundation + Cycle-1 domain/events + analytics + digital twin + first agent + RL environment + agent/RL decision governance)
+## Current status: Milestones 1–8 complete (foundation + Cycle-1 domain/events + analytics + digital twin + first agent + RL environment + agent/RL decision governance + predictive intelligence)
 
-**The frontend and the rest of the agent roster are not implemented yet** — see [`docs/ENGINEERING_ROADMAP.md`](docs/ENGINEERING_ROADMAP.md) for what's next (Milestone 8: predictive intelligence).
+**The frontend and the rest of the agent roster are not implemented yet** — see [`docs/ENGINEERING_ROADMAP.md`](docs/ENGINEERING_ROADMAP.md) for what's next (Milestone 9: governance and reliability).
 
 What runs today:
 - A FastAPI backend (`backend/`) with structured logging, settings, liveness/readiness checks, and connectivity probes for PostgreSQL and DuckDB.
@@ -24,7 +24,8 @@ What runs today:
 - **The Flow Intelligence Agent** (`backend/app/agents/flow_intelligence/`): the first real agent, orchestrated by a custom checkpoint/retry state machine (`backend/app/orchestration/`), backed by a provider-independent `LLMProvider` abstraction (`backend/app/core/llm/` — `OllamaProvider` for true local-first inference, no API key; `FakeLLMProvider` for tests). Produces evidence-category-tagged findings (`observation`/`calculated`/`inferred`/`hypothesis`/`prediction`) — never a bare string, never a `recommendation` (structurally impossible for this agent, not just discouraged). Verified against a real induced jackpot backlog running through the actual pipeline — see `HANDOFF.md`.
 - **An RL environment** (`backend/app/rl/`): a Gymnasium environment wrapping the digital twin for one narrow decision problem (aisle-level stow priority balancing), with hard constraints enforced structurally, two baselines, and a PPO policy — evaluated across multiple seeds and held-out scenarios with an honest result: reward improved, but the metric that actually matters (jackpot backlog) didn't, and the advantage disappeared on the hardest held-out scenario. Full writeup in `docs/RL_ENVIRONMENT_SPEC.md`.
 - **Agent/RL decision governance** (`backend/app/security/`): a policy engine, a (minimal, honestly-labeled) risk-evaluation stub, human approval, and a permanent audit record (`DecisionRecord`) connecting agent evidence and RL-environment-based candidate evaluation — never the trained PPO policy, deliberately, given its honest result above. The "no path lets a recommendation become acted on without approval" requirement is a structural guard in the repository functions, not a convention. See `docs/SECURITY_AND_GOVERNANCE.md` and ADR-0009.
-- A 111-test pytest suite (pure logic + real-Postgres integration tests, the latter skipping honestly rather than failing when Postgres isn't reachable), and a GitHub Actions CI workflow (lint, migrate, seed + export + `dbt run`/`dbt test`, then pytest — against a real Postgres service container) on every push/PR to `main`.
+- **Predictive intelligence** (`backend/app/predictive/`): a jackpot-accumulation-risk classifier (logistic regression, two baselines) trained on digital-twin episodes, with temporal (seed-ordered, never-shuffled) train/test validation. A genuinely positive result — 0.857 ROC-AUC on held-out episodes, clearly beating both baselines — but only after catching and removing a feature pair that was really just a clock in disguise (measured correlation -1.0 in the fixed-arrival-schedule scenario, inflating accuracy to a misleading 0.96). Full writeup in `docs/PREDICTIVE_INTELLIGENCE_SPEC.md`.
+- A 131-test pytest suite (pure logic + real-Postgres integration tests, the latter skipping honestly rather than failing when Postgres isn't reachable), and a GitHub Actions CI workflow (lint, migrate, seed + export + `dbt run`/`dbt test`, then pytest — against a real Postgres service container) on every push/PR to `main`.
 
 ## Repository layout
 
@@ -44,6 +45,7 @@ backend/        FastAPI application (modular monolith) — see docs/SYSTEM_ARCHI
     analytics/  Python-side query interface onto the Milestone 3 DuckDB metrics
     rl/         StowBalancingEnv (Gymnasium) + static/rule-based/fixed-weight baselines + evaluation
     security/   policy engine, risk stub, decision records, approval/audit (Milestone 7; RBAC is Milestone 9)
+    predictive/ jackpot_risk/: dataset, model, evaluation, schemas, predict (Milestone 8)
   tests/
   alembic/      two migrations (Cycle-1 schema, agent_executions), upgrade/downgrade-verified
   scripts/      generate_synthetic_events.py, export_events_to_parquet.py, run_simulation.py
@@ -70,6 +72,7 @@ scripts/        repo-level developer/operational scripts (empty — distinct fro
 | [`docs/AGENTIC_ARCHITECTURE.md`](docs/AGENTIC_ARCHITECTURE.md) | Hierarchical agent design |
 | [`docs/DIGITAL_TWIN_SPEC.md`](docs/DIGITAL_TWIN_SPEC.md) | SimPy discrete-event station model |
 | [`docs/RL_ENVIRONMENT_SPEC.md`](docs/RL_ENVIRONMENT_SPEC.md) | Reinforcement-learning research scope |
+| [`docs/PREDICTIVE_INTELLIGENCE_SPEC.md`](docs/PREDICTIVE_INTELLIGENCE_SPEC.md) | Predictive models — dataset, features, evaluation |
 | [`docs/SECURITY_AND_GOVERNANCE.md`](docs/SECURITY_AND_GOVERNANCE.md) | Human-in-the-loop governance, secrets, public-repo safety |
 | [`docs/ENGINEERING_ROADMAP.md`](docs/ENGINEERING_ROADMAP.md) | Milestones and sequencing |
 | [`docs/OPEN_QUESTIONS.md`](docs/OPEN_QUESTIONS.md) | Tracked unknowns requiring validation or a decision |
@@ -185,6 +188,20 @@ python scripts/run_decision_demo.py
 ```
 
 Proposes a decision (evaluating named candidate priority-interventions via real simulation runs), runs it through the policy engine, attempts — and is refused — to record an outcome before approval, has a human approve a candidate, then runs a fresh simulation to record the observed outcome. Verified reproducible across repeated runs. See `docs/SECURITY_AND_GOVERNANCE.md` and ADR-0009 for the governance pipeline this demonstrates.
+
+### Running the predictive model
+
+Needs the `predictive` extra (`pip install -e ".[dev,predictive]")`). No database needed. From `backend/`:
+
+```bash
+python scripts/train_jackpot_risk_model.py \
+    --scenario ../simulation/scenarios/rl_stow_balancing.yaml \
+    --train-seeds 1-40 --test-seeds 41-60 \
+    --model-out ../ml/models/jackpot_risk_model.joblib \
+    --report-out ../data/processed/jackpot_risk_evaluation_report.json
+```
+
+Prints accuracy/precision/recall/ROC-AUC for the base-rate baseline, a one-line heuristic, and the trained logistic regression — on held-out episodes of the training scenario and on two scenario variations never trained on. See `docs/PREDICTIVE_INTELLIGENCE_SPEC.md` for the full results and the clock-proxy feature bug caught before shipping.
 
 ## License
 
