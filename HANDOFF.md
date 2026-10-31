@@ -2,7 +2,7 @@
 
 **Purpose of this file**: the persistent, single source of truth for "where StationOS actually stands," written so a new engineering session (human or AI) can continue without this conversation's history. If something here conflicts with a doc in `docs/`, the more detailed doc wins for *content*; this file wins for *current status and what to do next*.
 
-Last updated: 2026-10-31 (Milestone 9 completed this session).
+Last updated: 2026-10-31 (Milestone 10, Part 1 — the API layer — completed this session).
 
 ---
 
@@ -18,65 +18,68 @@ Last updated: 2026-10-31 (Milestone 9 completed this session).
 | 6 — Reinforcement-learning environment | ✅ Complete |
 | 7 — Agent and RL coordination | ✅ Complete |
 | 8 — Predictive intelligence | ✅ Complete |
-| 9 — Governance and reliability | ✅ **Complete** (this session) |
-| 10 — Operational command centre | Not started — **next, but unscoped** |
+| 9 — Governance and reliability | ✅ Complete |
+| 10 — Operational command centre | 🟡 **Part 1 (API layer) complete this session.** Part 2 (React/TypeScript frontend) **not started.** |
 
-Full milestone definitions: `docs/ENGINEERING_ROADMAP.md`. **Frontend remains explicitly deferred** — carried forward from two prior sessions' handoffs. It still needs its own scoping conversation (what subset of the full view list, what minimal API layer, how RBAC should gate it) before any frontend code is written.
+Full milestone definitions: `docs/ENGINEERING_ROADMAP.md`.
 
-## 2. What was built this session (Milestone 9)
+## 2. The scoping conversation, and what it decided
 
-A large, multi-part milestone — `docs/ENGINEERING_ROADMAP.md` lists eight deliverables; all eight got real, proportionate treatment (some new code, two were genuine reviews with documented findings, not gaps that needed new code):
+Before any frontend code was written, the project owner had an explicit scoping conversation (prompted by three prior sessions' deferrals). Four decisions came out of it:
 
-**RBAC** (`backend/app/security/rbac.py`): `Role` (`operator`/`supervisor`/`admin`), a fixed role → eligible-decision-type permission table, `check_can_approve` (raises `RBACError`). `repository.py::approve_decision`/`reject_decision` now require an `approver_role: Role` and check it before mutating anything, persisting the role alongside `approved_by` (`DecisionRecord.approver_role`, new column). Deliberately simple and code-defined — checks a role the caller *claims*, since there's no real login/session system yet for a database-backed role to attach to. **Honest remaining gap**: no verified identity behind that claim (see §6).
+1. **Build the complete backend API first, then the frontend, in a separate session.** This is why this session built Part 1 only — no React/TypeScript code exists yet.
+2. **The decision-governance pipeline's actions (approve/reject) should be reachable from the eventual UI**, via an explicit "dev-mode role picker" (no real login system) rather than staying read-only.
+3. **Build a more complete REST API now**, not just the minimal slice the first frontend cut needs — anticipating that a real role-picker UI and other future consumers will want it.
+4. **Lightweight Vite + React + TypeScript SPA** (no SSR) for the eventual frontend, once Part 2 starts — noted here for when that session begins, not acted on yet.
 
-**Shadow-mode evaluation**: `decision_service.py::propose_decision(..., shadow=True)` creates a `DecisionRecord` with status `shadow` instead of `pending_approval` — a terminal status. No separate guard was added: the existing `_require_pending`/`APPROVED`-only checks in `repository.py` already only accept `pending_approval`/`approved` respectively, so `shadow` is excluded automatically.
+Views with Cycle 2 data requirements (high-value processing, Pick & Stage, dispatch waves, returns) were **not** built — Cycle 2 doesn't exist (no domain model, no events), so there's nothing for an endpoint to read. This wasn't a separate scoping decision to re-litigate; it falls out of what data actually exists.
 
-**Data validation**: `repository.py::create_decision_record` now re-validates every JSONB-bound argument (evidence as `list[Finding]`, candidates as a new `policy_engine.py::CandidateRecord`, policy-engine result, risk evaluation) against its real Pydantic schema before persisting — a malformed caller gets a loud `ValidationError`, not silently-corrupt audit data.
+## 3. What was built this session (Milestone 10, Part 1)
 
-**Model and policy versioning**: `backend/app/core/versioning.py::validate_version_format` names and checks the dated `"YYYY-MM-DD.N"` convention `POLICY_VERSION`/`MODEL_VERSION` already followed ad hoc — both now have a test asserting they match it. `DecisionRecord.component_versions` (new column) stamps every decision with the exact version of each component that produced it (currently just the policy engine).
+**`backend/app/schemas/`** (new package — populated for the first time; `docs/SYSTEM_ARCHITECTURE.md` had long said this would happen "once API-facing schemas are needed"): `decisions.py`, `simulation.py`, `rl.py`, `agents.py` — HTTP-facing request/response models, kept distinct from each module's own internal domain Pydantic models.
 
-**Secure configuration review**: `Settings.postgres_password` is now `pydantic.SecretStr`, masked out of `repr()`/`str()` by default (`postgres_dsn` explicitly unwraps it with `.get_secret_value()`). `.env.example`/`docker-compose.yml` reviewed — only placeholder values.
+**`backend/app/api/routes/`** gained five routers:
+- `analytics.py` — the five Milestone 3 metrics, read-only, 503 if the dbt pipeline hasn't been run.
+- `agents.py` — list/get/run Flow Intelligence Agent executions. `POST .../run` uses the real `OllamaProvider` (never `FakeLLMProvider` — that stays test-only); if Ollama isn't reachable, the existing, already-tested fallback path handles it.
+- `simulation.py` — list shipped scenarios, run one synchronously and get a summary (never the raw event list, never a disk write).
+- `rl.py` — evaluate the two baseline policies (never the trained PPO policy) against a scenario.
+- `decisions.py` — list/get/propose/approve/reject/observe-outcome. The same RBAC checks and state-machine guards as the Python API — no separate code path.
 
-**Observability**: `backend/app/core/tracing.py` — a minimal, local-first OpenTelemetry integration: `SimpleSpanProcessor` + `ConsoleSpanExporter` only (deliberately not `BatchSpanProcessor` — no background export thread to leak past process/test shutdown). `AgentExecutor.run`/`resume` and `decision_service.py`'s `propose_decision`/`observe_outcome` are instrumented with spans. `get_tracer()` is safe to call anywhere (scripts, tests, app code) without `configure_tracing()` ever being invoked — the OpenTelemetry API's own no-op default handles it, so no test or script gets unrequested console span noise; only `app/main.py` opts in for real.
+**Two HTTP-specific security boundaries**, deliberate and tested, not incidental: no endpoint accepts a free-form filesystem path (`app/simulation/config.py::resolve_shipped_scenario_path` resolves a filename against a shipped-scenario allow-list, stripping any directory-traversal attempt) or a free-form DuckDB path (always the server-configured one). CORS is a narrow local-dev allow-list, not a wildcard.
 
-**Error-handling and idempotency reviews** (documented in `docs/SECURITY_AND_GOVERNANCE.md`, no new code needed): the readiness probes' broad `except Exception: return False` is deliberate and correct (best-effort health checks, not swallowed real errors); `AgentExecution`/`DecisionRecord` rows are deliberately non-idempotent — each call creates a new audit-log row, by design, since both represent *events* ("this ran," "this was proposed"), not records to deduplicate.
+**36 new tests** (154 → 190 total): `tests/api/` (29, across all five routers, including dedicated path-traversal-rejection tests), plus direct unit tests for `app/simulation/config.py`'s new helpers and `app/orchestration/repository.py::list_executions` (also new, needed for the agents API).
 
-**Migration** `8a19c7f88922` adds `approver_role`/`component_versions` to `decision_records`, upgrade/downgrade-verified.
+**Verified live, not just via `TestClient`**: ran the real server with `uvicorn`, and over real HTTP: listed scenarios, proposed a decision (real simulation-based candidate evaluation), had an `operator` get refused (403), had a `supervisor` approve it, ran the observed-outcome simulation, ran an RL evaluation, and listed agent executions. Full reference: `docs/API_REFERENCE.md`.
 
-**23 new tests** (131 → 154 total): `tests/security/test_rbac.py` (6), `tests/core/test_versioning.py` (3), `tests/core/test_tracing.py` (2), plus RBAC/shadow/data-validation coverage added to `tests/security/test_repository.py` and `test_decision_service.py`, and a version-format check added to `tests/predictive/jackpot_risk/test_model.py`.
+## 4. A real nuance found while building this
 
-## 3. The exit criteria, demonstrated live
+`AgentExecutor`'s LLM-fallback path (Milestone 5) marks an execution `FAILED` and records `error`, but never writes the fallback output into the persisted row's `output` column — only a successful run does that (`mark_completed`). `POST /agents/flow-intelligence/run` compensates by always returning the actual in-memory result, not relying solely on what got persisted — otherwise a caller hitting the fallback path would see `output: null` despite a real, non-fabricated result having been computed. **Not changed in `app/orchestration/` itself** — that would be revisiting Milestone 5's established, tested behavior, out of scope for an API-layer session. Tracked in `docs/OPEN_QUESTIONS.md` as a real but deliberately-deferred question.
 
-`scripts/run_decision_demo.py` now runs, against real Postgres and real simulation, in order: propose → policy engine → (refused) outcome-before-approval → **an `OPERATOR` tries to approve, refused by RBAC** → **a `SUPERVISOR` approves successfully** → observed-outcome simulation run → **a shadow-mode decision proposed, and refused approval even by an `ADMIN`**. This is the literal roadmap exit criterion ("a recommendation... cannot reach 'acted on' status without RBAC-checked human approval... shadow-mode runs produce output clearly labeled as not-executed"), exercised live, not just asserted in docs — sample real output is in `docs/SECURITY_AND_GOVERNANCE.md` and `docs/ENGINEERING_ROADMAP.md`.
+## 5. Known limitations
 
-## 4. Known limitations (read before building on RBAC)
+- **Part 2 (the actual frontend) doesn't exist.** This session built the API it will consume, nothing more. Don't assume any UI exists when reasoning about "what Milestone 10 delivers."
+- **RBAC's limitation from Milestone 9 applies identically over HTTP**: `approver_role` is a claimed role, not a verified identity — the API doesn't add (or pretend to add) authentication.
+- **Only two RL policies are exposed via `/rl/evaluate`** (the baselines) — not the trained PPO policy, deliberately, for the same reason Milestones 6/7 never wired it into anything beyond its own evaluation report.
+- **`/simulation/run` and `/rl/evaluate` are synchronous** — a large seed list or an expensive scenario blocks that request for its full duration (FastAPI runs sync `def` routes in a thread pool, so this doesn't block other requests, but the caller still waits). Request schemas cap seed-list length (`max_length=20`) as a basic guard; no async job queue was built, since that would be real new infrastructure for a need that hasn't shown up yet.
+- The tests-vs-dev-database footgun from prior milestones is unchanged (hit and recovered the documented way twice during this session's manual testing).
 
-- **No verified identity behind a claimed `Role`.** Anyone calling `approve_decision`/`reject_decision` can assert `Role.ADMIN` and it will be trusted. This milestone built the permission *table* and the *check*, not an authentication system — there isn't one yet, and none was pretended into existence. Don't build anything that treats `approved_by`/`approver_role` as verified identity.
-- **`risk.py` is still a stub** (unchanged from Milestone 7) — every decision type is honestly `simulation_only`/reversible because nothing acts on a live system yet.
-- **Tracing is local-only, single-process.** `app/core/tracing.py` correlates multi-step operations within one Python process; there's still no real network/process hop to call genuinely "distributed." Revisit a real exporter only once one exists.
-- **Only one decision type's RBAC permissions are populated** (`aisle_stow_priority`) — adding a second decision type means deliberately adding it to `rbac.py`'s permission table, not something that happens automatically.
-- The tests-vs-dev-database footgun from prior milestones is unchanged (hit and recovered the documented way during this session's manual testing).
+## 6. Open questions
 
-## 5. Open questions
+Full register: `docs/OPEN_QUESTIONS.md`. New this session: exact Part 2 frontend scope (which views ship first, is the dev-mode role picker in the first cut); whether `/agents/flow-intelligence/run` should ever support a `FakeLLMProvider` dev-mode flag (leaning: no); whether `AgentExecutor`'s fallback path should start persisting its output (unresolved, deliberately not decided this session). Unchanged: RBAC's claimed-role limitation; real risk/blast-radius model beyond the Milestone 7 stub; should the jackpot-risk prediction or the trained RL policy ever become agent/decision evidence (both still leaning: not yet).
 
-Full register: `docs/OPEN_QUESTIONS.md`. Resolved this session: RBAC role model (now `operator`/`supervisor`/`admin`). New this session: real identity/auth behind RBAC's claimed role (unresolved — real gap); real drift-monitoring/distributed-tracing beyond this milestone's minimal first cut (unresolved). Unchanged: real risk/blast-radius model beyond the Milestone 7 stub; should the jackpot-risk prediction or the trained RL policy ever be wired into an agent/decision (both still leaning: not yet); metric formulas still `requires_validation`; live `OllamaProvider` verification pending.
+## 7. Security considerations
 
-## 6. Security considerations
+Two new, deliberate boundaries specific to being HTTP-reachable (§3) — path-traversal protection and no-arbitrary-DuckDB-path — are documented in `docs/SECURITY_AND_GOVERNANCE.md`'s threat model table, not just implied by the code. CORS stays a narrow local-dev allow-list. The decision-governance pipeline's RBAC and audit guarantees are unchanged by being reachable over HTTP — the API calls the exact same `app/security/repository.py` functions, no parallel or weaker path was added. No new secrets, credentials, or real data introduced.
 
-The decision-governance pipeline is now RBAC-checked end to end for the one piece that was missing after Milestone 7. The honest limitation (§4, §5) is prominent by design, not buried — a reviewer should come away knowing RBAC here means "a checked permission table," not "an authenticated system." `Settings.postgres_password` is now `SecretStr`. No new real secrets, credentials, or data introduced. The new base dependencies (`opentelemetry-api`/`opentelemetry-sdk`) are standard, widely-used packages; tracing output never includes secret values (spans only carry the attributes this code explicitly sets — decision type, candidate count, execution IDs — never `Settings` or connection strings).
+## 8. Recommended next steps
 
-## 7. Recommended next steps
+**Milestone 10, Part 2 — the React/TypeScript frontend.** Per the scoping conversation: a lightweight Vite + React + TypeScript SPA (no SSR), talking to the API built this session, including the explicit "dev-mode role picker" for RBAC-gated decision actions (clearly labeled as not real authentication). `docs/API_REFERENCE.md` is the menu of what's available to build views against. Views to build: station overview, induct/sortation, stow/jackpot (via `/analytics`), AI investigations (`/agents/flow-intelligence`), digital-twin scenario runner (`/simulation`), RL policy comparison (`/rl`), decision/audit history with approve/reject actions (`/decisions`). Cycle 2 views stay out of scope — there's still no data for them.
 
-**Milestone 10 (operational command centre / frontend) is next on the roadmap, but deliberately not scoped yet** — two prior sessions' handoffs already flagged this (roadmap's own non-goal: "nothing here gets built early just because 'it would be nice to see something'"; near-total absence of an HTTP API beyond `/health`). Before writing any frontend code:
-1. Have the scoping conversation explicitly — what subset of Milestone 10's full view list is realistic for a first cut, what minimal API layer it needs, and how Milestone 9's RBAC should gate which views/actions.
-2. Re-read `docs/ENGINEERING_ROADMAP.md` Milestone 10 and this file's own history of raising this (see prior HANDOFF.md revisions, now superseded but the reasoning holds).
+## 9. Exact instructions for the next session
 
-If instead continuing backend-only work: Milestone 8's "build the next predictive candidate area" and Milestone 6's "domain-randomized RL training" are both legitimate, already-scoped next steps that don't require the frontend conversation first.
-
-## 8. Exact instructions for the next session
-
-1. Read this file in full before doing anything — especially §4's RBAC limitation, so it isn't accidentally treated as more solved than it is.
-2. Confirm Milestones 1–9 still work: `cd backend && pip install -e ".[dev,analytics,rl,predictive]" && ruff check .`; bring up Postgres, `alembic upgrade head` (four migrations), `pytest -q` (154 tests). If `alembic upgrade head` silently no-ops, it's the documented tests-vs-dev-database footgun — drop `alembic_version` and retry (but check first whether the tables actually need recreating — stamping to head is the right fix if they don't, re-running from scratch if they were genuinely dropped).
-3. If the project owner wants to proceed with the frontend: stop and have the scoping conversation from §7 before writing code — don't default into building it.
-4. If continuing backend work instead: pick deliberately from the legitimate open items in §5, don't start a seventh predictive candidate area or a new RL problem without being asked.
-5. When the next milestone is done: update this file's status table and date, run the full verification sequence from step 2 one more time and report the actual result, and update `docs/OPEN_QUESTIONS.md` for anything resolved or newly found.
+1. Read this file, then `docs/API_REFERENCE.md` in full, then `docs/ENGINEERING_ROADMAP.md` Milestone 10's Part 1 write-up (so the actual delivered API shape is understood before designing against it, not assumed).
+2. Confirm Milestones 1–9 and Part 1 still work: `cd backend && pip install -e ".[dev,analytics,rl,predictive]" && ruff check .`; bring up Postgres, `alembic upgrade head` (four migrations), `pytest -q` (190 tests). Also smoke-test the real server once: `uvicorn app.main:app --reload`, hit `/docs`, try a couple endpoints for real — don't assume the API still works just because the tests pass.
+3. Scope Part 2 concretely before writing frontend code: which views ship first (all seven API-backed ones, or a smaller first cut), and whether the dev-mode role picker is in that first cut or a fast-follow.
+4. Set up the frontend project (`frontend/`, currently a placeholder directory) — Vite + React + TypeScript, pointed at the API's CORS-allowed origin (`http://localhost:5173` is the default `Settings.cors_allowed_origins` entry; keep them in sync if the dev port changes).
+5. Every view must state the source/status of what it shows (Milestone 10's exit criterion) — `source_kind: "simulated"` is already in the `/simulation/run` and `/rl/evaluate` response shapes for exactly this reason; carry that labeling into the UI, don't drop it.
+6. When Part 2 is done (or substantially progressed): update this file's status table and date, update `docs/ENGINEERING_ROADMAP.md`'s Milestone 10 entry to reflect both parts complete, and update `docs/OPEN_QUESTIONS.md` for anything resolved or newly found.

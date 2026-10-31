@@ -58,6 +58,14 @@ Status values: `unresolved` (no leaning yet), `leaning` (a tentative direction e
 | Project license | Affects public-repo readiness | None — flagged in `README.md` | `unresolved` |
 | Project/station branding (is "Station NOVA-1" the permanent fictional identity, or a placeholder?) | Cosmetic but referenced across docs/code once simulation starts | Treat as the working default until told otherwise | `leaning` |
 
+## Frontend / API
+
+| Question | Why it matters | Current leaning | Status |
+|---|---|---|---|
+| Exact frontend scope for Milestone 10 Part 2 — which of the API-backed views ship first, and does the "dev-mode role picker" the scoping conversation agreed to get built as part of the first cut? | The API layer (Part 1) supports all of station overview/induct/stow/AI investigations/digital-twin runner/RL comparison/decision history, but the frontend itself hasn't been scoped in that level of detail yet | Scope this at the start of the Part 2 session, using `docs/API_REFERENCE.md` as the starting menu of what's available | `unresolved` |
+| Should `/agents/flow-intelligence/run` support a `FakeLLMProvider` dev-mode flag, so exercising the AI investigations view doesn't depend on whether Ollama happens to be running? | `FakeLLMProvider` is explicitly "test-only, never a silent runtime default" (`docs/AGENTIC_ARCHITECTURE.md`) — adding a flag that lets an HTTP caller opt into it would be a real, deliberate exception to that rule, not a given | Lean toward no: the existing LLM-unreachable fallback (deterministic findings + `interpretation_error`) already gives the frontend something real and honest to render either way; only revisit if that proves insufficient for the Part 2 UI | `leaning` |
+| Should `AgentExecutor`'s fallback path start persisting its output to the audit row (currently only `error` is recorded on a FAILED execution)? | Found while building Milestone 10's `/agents/flow-intelligence/run` — the API route currently compensates by returning the in-memory result directly rather than relying on the persisted row | Revisit deliberately if something other than this one API route ever needs to read a fallback's output back from the database later; not changed this session, out of scope for an API-layer milestone | `unresolved` |
+
 ## How to resolve one of these
 
 Update the row's status and leaning in this file, and if the resolution is a significant, hard-to-reverse architectural choice, promote it to a new ADR in `docs/adr/` rather than just editing this register — this file is for tracking the unknown, not for recording the decided.

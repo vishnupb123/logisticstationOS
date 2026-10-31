@@ -43,6 +43,8 @@ Audit record  — decision, evidence, approver + role, component
 
 See ADR-0009's implementation notes and `docs/ENGINEERING_ROADMAP.md` Milestones 7 and 9.
 
+**Reachable over HTTP as of Milestone 10** (`POST /decisions`, `.../approve`, `.../reject`, `.../observe-outcome` — `docs/API_REFERENCE.md`): the exact same RBAC check and state-machine guards apply, with no separate code path for the API — `app/api/routes/decisions.py` calls the same `app/security/repository.py` functions directly. RBAC's claimed-role limitation (no verified identity yet) therefore applies to the API too, not just direct Python callers.
+
 ## Secrets and configuration
 
 - No secrets, credentials, or `.env` files are committed. `.gitignore` excludes `.env*` (an `.env.example` with placeholder values, no real ones, is fine and expected).
@@ -85,5 +87,7 @@ This checklist is intentionally mirrored in `README.md` and `CLAUDE.md` so it's 
 | Malformed data entering the permanent audit record | `app/security/repository.py::create_decision_record` re-validates every JSONB-bound argument (evidence, candidates, policy-engine result, risk evaluation) against its real Pydantic schema before persisting — a structurally invalid caller gets a loud `ValidationError`, not silently-corrupt audit data (Milestone 9) |
 | Secret leakage via logs | `Settings.postgres_password` is a `pydantic.SecretStr` (Milestone 9), masked out of `repr()`/`str()` by default; structured logging (`structlog`) should still never log a full `Settings` object or raw connection string regardless; log field allow-listing is a Milestone 2 follow-up once there's more to log |
 | Dependency supply-chain risk | Dependencies pinned with version ranges in `pyproject.toml`; no unreviewed packages added without checking they're from a reputable source |
+| Arbitrary filesystem/DuckDB file access via an HTTP endpoint (Milestone 10) | No API endpoint accepts a free-form path from a caller. Scenario selection takes a filename only, resolved against a shipped-scenario allow-list (`app/simulation/config.py::resolve_shipped_scenario_path`, which strips any directory-traversal attempt via `Path(filename).name` before the lookup — verified by a dedicated test); analytics/agent endpoints always read the server-configured DuckDB path, never a caller-supplied one. See `docs/API_REFERENCE.md` |
+| A public-facing API surface on a local-first tool (Milestone 10) | CORS is a narrow, explicit allow-list (`Settings.cors_allowed_origins`, default local Vite dev ports only), not a wildcard — this remains a local-first, single-operator tool, not a public multi-tenant service |
 
 This threat model will grow as each layer gets built — it is not meant to be complete at the foundation phase, only to establish that security is considered per-layer from the start rather than bolted on later.

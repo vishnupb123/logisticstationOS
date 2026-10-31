@@ -10,9 +10,11 @@ StationOS models a **fictional** delivery station ("Station NOVA-1") using **syn
 
 This project is not affiliated with, endorsed by, or built on confidential data from any employer or company. It does not integrate with any real operator's systems. Operational terminology (induct, sortation, stow, dispatch, etc.) reflects generic parcel-logistics industry concepts, not a verified replica of any specific organization's proprietary process. See [`docs/SECURITY_AND_GOVERNANCE.md`](docs/SECURITY_AND_GOVERNANCE.md) §"Public repository safety" before contributing real-world data of any kind — don't.
 
-## Current status: Milestones 1–9 complete (foundation + Cycle-1 domain/events + analytics + digital twin + first agent + RL environment + agent/RL decision governance + predictive intelligence + governance/reliability)
+## Current status: Milestones 1–9 complete, Milestone 10 Part 1 (API layer) complete
 
-**The frontend and the rest of the agent roster are not implemented yet** — see [`docs/ENGINEERING_ROADMAP.md`](docs/ENGINEERING_ROADMAP.md) for what's next (Milestone 10: operational command centre — not yet scoped, see `HANDOFF.md`).
+Foundation + Cycle-1 domain/events + analytics + digital twin + first agent + RL environment + agent/RL decision governance + predictive intelligence + governance/reliability + the backend API layer a frontend will consume.
+
+**The React/TypeScript frontend itself (Milestone 10 Part 2) and the rest of the agent roster are not implemented yet** — see [`docs/ENGINEERING_ROADMAP.md`](docs/ENGINEERING_ROADMAP.md) and [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md) for what's next, and `HANDOFF.md` before starting it.
 
 What runs today:
 - A FastAPI backend (`backend/`) with structured logging, settings, liveness/readiness checks, and connectivity probes for PostgreSQL and DuckDB.
@@ -26,15 +28,18 @@ What runs today:
 - **Agent/RL decision governance** (`backend/app/security/`): a policy engine, a (minimal, honestly-labeled) risk-evaluation stub, RBAC-checked human approval (`operator`/`supervisor`/`admin` — `rbac.py`), shadow-mode proposals that can never be approved, and a permanent audit record (`DecisionRecord`, now including who-approved-with-what-role and exact component versions) connecting agent evidence and RL-environment-based candidate evaluation — never the trained PPO policy, deliberately, given its honest result above. The "no path lets a recommendation become acted on without approval" requirement is a structural guard in the repository functions, not a convention. See `docs/SECURITY_AND_GOVERNANCE.md` and ADR-0009.
 - **Minimal local-first tracing** (`backend/app/core/tracing.py`): OpenTelemetry, console-exporter only, no external collector — correlates the multi-step operations inside an agent run or a decision proposal.
 - **Predictive intelligence** (`backend/app/predictive/`): a jackpot-accumulation-risk classifier (logistic regression, two baselines) trained on digital-twin episodes, with temporal (seed-ordered, never-shuffled) train/test validation. A genuinely positive result — 0.857 ROC-AUC on held-out episodes, clearly beating both baselines — but only after catching and removing a feature pair that was really just a clock in disguise (measured correlation -1.0 in the fixed-arrival-schedule scenario, inflating accuracy to a misleading 0.96). Full writeup in `docs/PREDICTIVE_INTELLIGENCE_SPEC.md`.
-- A 154-test pytest suite (pure logic + real-Postgres integration tests, the latter skipping honestly rather than failing when Postgres isn't reachable), and a GitHub Actions CI workflow (lint, migrate, seed + export + `dbt run`/`dbt test`, then pytest — against a real Postgres service container) on every push/PR to `main`.
+- **A real HTTP API** (`backend/app/api/routes/`): read endpoints for analytics/agent-execution-history/simulation/RL comparison, plus RBAC-gated write actions (propose/approve/reject/observe-outcome) on the decision-governance pipeline — everything the frontend (not yet built) will need. No endpoint accepts an arbitrary filesystem or DuckDB path from a caller; CORS is a narrow local-dev allow-list, not a wildcard. See `docs/API_REFERENCE.md`.
+- A 190-test pytest suite (pure logic + real-Postgres integration tests, the latter skipping honestly rather than failing when Postgres isn't reachable), and a GitHub Actions CI workflow (lint, migrate, seed + export + `dbt run`/`dbt test`, then pytest — against a real Postgres service container) on every push/PR to `main`.
 
 ## Repository layout
 
 ```
 backend/        FastAPI application (modular monolith) — see docs/SYSTEM_ARCHITECTURE.md
   app/
-    api/        HTTP routes
-    core/       settings, logging, deterministic-RNG helpers, the LLMProvider abstraction (llm/)
+    api/        HTTP routes — health, analytics, agents, simulation, rl, decisions (Milestone 10 Part 1)
+    schemas/    HTTP-facing request/response models for the api/ boundary (Milestone 10)
+    core/       settings, logging, deterministic-RNG helpers, the LLMProvider abstraction (llm/),
+                a versioning convention, minimal local-first tracing
     db/         PostgreSQL + DuckDB connection management
     domain/     domain entities — Station, Truck, Aisle, Hamper, Stower, Bag, Parcel (Cycle 1 only)
     events/     event envelope/payload schemas, the events table, EventStore, shared Parquet writer
@@ -48,7 +53,7 @@ backend/        FastAPI application (modular monolith) — see docs/SYSTEM_ARCHI
     security/   policy engine, risk stub, decision records, RBAC, approval/audit (Milestones 7 & 9)
     predictive/ jackpot_risk/: dataset, model, evaluation, schemas, predict (Milestone 8)
   tests/
-  alembic/      two migrations (Cycle-1 schema, agent_executions), upgrade/downgrade-verified
+  alembic/      four migrations (Cycle-1 schema, agent_executions, decision_records, RBAC/versioning columns), upgrade/downgrade-verified
   scripts/      generate_synthetic_events.py, export_events_to_parquet.py, run_simulation.py
   analytics/    dbt Core project — raw/cleaned/curated/operational_intelligence models, 30 tests
 data/           raw / processed / synthetic / analytics data (gitignored contents)
@@ -74,6 +79,7 @@ scripts/        repo-level developer/operational scripts (empty — distinct fro
 | [`docs/DIGITAL_TWIN_SPEC.md`](docs/DIGITAL_TWIN_SPEC.md) | SimPy discrete-event station model |
 | [`docs/RL_ENVIRONMENT_SPEC.md`](docs/RL_ENVIRONMENT_SPEC.md) | Reinforcement-learning research scope |
 | [`docs/PREDICTIVE_INTELLIGENCE_SPEC.md`](docs/PREDICTIVE_INTELLIGENCE_SPEC.md) | Predictive models — dataset, features, evaluation |
+| [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md) | Every HTTP endpoint, the frontend's API layer (Milestone 10 Part 1) |
 | [`docs/SECURITY_AND_GOVERNANCE.md`](docs/SECURITY_AND_GOVERNANCE.md) | Human-in-the-loop governance, secrets, public-repo safety |
 | [`docs/ENGINEERING_ROADMAP.md`](docs/ENGINEERING_ROADMAP.md) | Milestones and sequencing |
 | [`docs/OPEN_QUESTIONS.md`](docs/OPEN_QUESTIONS.md) | Tracked unknowns requiring validation or a decision |
@@ -102,7 +108,7 @@ pytest
 uvicorn app.main:app --reload
 ```
 
-`GET /health` and `GET /health/ready` are available once the server is running (default `http://localhost:8000`). PostgreSQL connection settings are read from environment variables (see `app/core/config.py` / `backend/.env.example`); without a running PostgreSQL instance, `/health/ready` reports `postgres: unreachable` rather than failing — that's expected, not a bug, if you're running this option without also starting Postgres separately.
+`GET /health` and `GET /health/ready` are available once the server is running (default `http://localhost:8000`), along with the full `/analytics`, `/agents`, `/simulation`, `/rl`, and `/decisions` API (Milestone 10 Part 1 — see [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md)) and interactive docs at `/docs`. PostgreSQL connection settings are read from environment variables (see `app/core/config.py` / `backend/.env.example`); without a running PostgreSQL instance, `/health/ready` reports `postgres: unreachable` rather than failing — that's expected, not a bug, if you're running this option without also starting Postgres separately.
 
 ### Applying migrations and generating synthetic data
 
