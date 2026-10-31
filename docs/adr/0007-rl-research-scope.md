@@ -1,6 +1,6 @@
 # ADR-0007: Reinforcement-learning research scope
 
-**Status**: Accepted; amended 2026-10-31 — first problem selected (see §"Amendment" below)
+**Status**: Accepted; amended 2026-10-31 — first problem selected and (separately) implemented/evaluated (see §"Amendment" and §"Implementation note" below)
 
 ## Context
 
@@ -39,4 +39,10 @@ Revisit scope expansion only after the first narrow problem has a credible, repr
 The project owner designated the first narrow decision problem directly, in the implementation-phase handoff, rather than it being derived here against a calibrated twin as originally envisioned in the Decision above: **aisle-level stow capacity and workload balancing under variable inbound flow.**
 
 This resolves the "which narrow problem" row in `docs/OPEN_QUESTIONS.md` as a project-owner decision, not an engineering derivation — the original caution in this ADR (resolve against the calibrated twin, not in the abstract) still applies to *how the problem is formalized* (exact state/action/reward, per `docs/RL_ENVIRONMENT_SPEC.md`), which remains Milestone 6 design work and is not settled by naming the problem now. If Milestone 4's calibrated twin reveals this problem isn't tractable or well-posed as scoped, that's a finding to bring back to this ADR, not a reason to silently substitute a different problem without updating this record.
+
+## Implementation note (2026-10-31): formalized, implemented, evaluated — with a cautionary result
+
+Milestone 6 built the environment (`backend/app/rl/env.py`), trained PPO against it, and ran the required baseline comparison across multiple seeds and two held-out scenario variations (full results: `docs/RL_ENVIRONMENT_SPEC.md` §"Evaluation protocol and results"). Consistent with this ADR's own Consequences ("no RL performance claim is published without a baseline comparison... actually having run"), the result is reported exactly as it came out, not smoothed into a success story: **PPO's reward was higher than both baselines in two of three scenarios, but its jackpot-backlog outcome — the metric that actually matters — was the same or marginally worse than the baselines' in every scenario, and its reward advantage vanished entirely on the hardest held-out variation.** The likely culprit is the reward's own shaping term (mean hamper occupancy), which dominated the outcome over the two metric-contract-backed terms (stow throughput, jackpot volume delta) — a reward-design lesson, not a verdict on RL as an approach.
+
+This is treated as a genuine, useful first result for a narrow, falsifiable research direction (per this ADR's Rationale) — not a failure to hide and not grounds to quietly try a different reward until the numbers look better. Revisiting the reward design, or training on randomized rather than single-fixed-world instantiations, is tracked in `docs/OPEN_QUESTIONS.md` as real follow-up work.
 

@@ -10,9 +10,9 @@ StationOS models a **fictional** delivery station ("Station NOVA-1") using **syn
 
 This project is not affiliated with, endorsed by, or built on confidential data from any employer or company. It does not integrate with any real operator's systems. Operational terminology (induct, sortation, stow, dispatch, etc.) reflects generic parcel-logistics industry concepts, not a verified replica of any specific organization's proprietary process. See [`docs/SECURITY_AND_GOVERNANCE.md`](docs/SECURITY_AND_GOVERNANCE.md) §"Public repository safety" before contributing real-world data of any kind — don't.
 
-## Current status: Milestones 1–5 complete (foundation + Cycle-1 domain/events + analytics + digital twin + first agent)
+## Current status: Milestones 1–6 complete (foundation + Cycle-1 domain/events + analytics + digital twin + first agent + RL environment)
 
-**RL, the frontend, and the rest of the agent roster are not implemented yet** — see [`docs/ENGINEERING_ROADMAP.md`](docs/ENGINEERING_ROADMAP.md) for what's next (Milestone 6: reinforcement-learning environment).
+**The frontend and the rest of the agent roster are not implemented yet** — see [`docs/ENGINEERING_ROADMAP.md`](docs/ENGINEERING_ROADMAP.md) for what's next (Milestone 7: agent and RL coordination).
 
 What runs today:
 - A FastAPI backend (`backend/`) with structured logging, settings, liveness/readiness checks, and connectivity probes for PostgreSQL and DuckDB.
@@ -22,7 +22,8 @@ What runs today:
 - **A dbt Core analytics pipeline** (`backend/analytics/`): Parquet export of the event log → layered dbt models (raw/cleaned/curated/operational_intelligence) against DuckDB → five computed, queryable metrics (WIPS, induct throughput, jackpot volume, parcel dwell time, stow throughput — `docs/OPERATIONAL_DOMAIN_MODEL.md` §4.1), backed by 30 dbt tests.
 - **A SimPy digital twin** (`backend/app/simulation/`): a discrete-event model of Cycle 1 with real resource contention (shared induct/stower capacity, finite per-aisle hampers — jackpot diversion emerges from actual contention, not a probability knob), two scenarios, deterministic/seeded reproducibility, and output that runs through the *same* dbt project as real data (verified, not just asserted).
 - **The Flow Intelligence Agent** (`backend/app/agents/flow_intelligence/`): the first real agent, orchestrated by a custom checkpoint/retry state machine (`backend/app/orchestration/`), backed by a provider-independent `LLMProvider` abstraction (`backend/app/core/llm/` — `OllamaProvider` for true local-first inference, no API key; `FakeLLMProvider` for tests). Produces evidence-category-tagged findings (`observation`/`calculated`/`inferred`/`hypothesis`/`prediction`) — never a bare string, never a `recommendation` (structurally impossible for this agent, not just discouraged). Verified against a real induced jackpot backlog running through the actual pipeline — see `HANDOFF.md`.
-- A 79-test pytest suite (pure logic + real-Postgres integration tests, the latter skipping honestly rather than failing when Postgres isn't reachable), and a GitHub Actions CI workflow (lint, migrate, seed + export + `dbt run`/`dbt test`, then pytest — against a real Postgres service container) on every push/PR to `main`.
+- **An RL environment** (`backend/app/rl/`): a Gymnasium environment wrapping the digital twin for one narrow decision problem (aisle-level stow priority balancing), with hard constraints enforced structurally, two baselines, and a PPO policy — evaluated across multiple seeds and held-out scenarios with an honest result: reward improved, but the metric that actually matters (jackpot backlog) didn't, and the advantage disappeared on the hardest held-out scenario. Full writeup in `docs/RL_ENVIRONMENT_SPEC.md`.
+- A 91-test pytest suite (pure logic + real-Postgres integration tests, the latter skipping honestly rather than failing when Postgres isn't reachable), and a GitHub Actions CI workflow (lint, migrate, seed + export + `dbt run`/`dbt test`, then pytest — against a real Postgres service container) on every push/PR to `main`.
 
 ## Repository layout
 
@@ -40,7 +41,7 @@ backend/        FastAPI application (modular monolith) — see docs/SYSTEM_ARCHI
     orchestration/  AgentDefinition/AgentExecutor, the agent_executions audit table
     agents/     shared evidence types + the Flow Intelligence Agent
     analytics/  Python-side query interface onto the Milestone 3 DuckDB metrics
-    rl/         reinforcement learning environment & training (empty — Milestone 6)
+    rl/         StowBalancingEnv (Gymnasium) + static/rule-based baselines
     security/   governance, RBAC, audit (empty — Milestones 7 & 9)
   tests/
   alembic/      two migrations (Cycle-1 schema, agent_executions), upgrade/downgrade-verified
@@ -50,7 +51,7 @@ data/           raw / processed / synthetic / analytics data (gitignored content
 docs/           architecture, domain model, specs, ADRs — start here
 frontend/       React/TypeScript command-centre UI (not started)
 infra/          Docker / Docker Compose / CI definitions (not started)
-ml/             RL training artifacts (not started)
+ml/             trained RL policies (gitignored — regenerate via backend/scripts/train_rl_policy.py)
 simulation/     digital-twin scenario YAML files — normal_operations.yaml, delayed_inbound_trucks.yaml
 scripts/        repo-level developer/operational scripts (empty — distinct from backend/scripts/)
 ```
@@ -160,6 +161,19 @@ for finding in output.findings:
 ```
 
 ⚠️ `OllamaProvider` needs a real Ollama server (`ollama serve`, with `ollama pull llama3.1` or whatever `Settings.ollama_model` names) — not installed by default, not verified against a live server this session (`docs/OPEN_QUESTIONS.md`). Swap in `app.core.llm.fake.FakeLLMProvider([...])` with a scripted response to run the agent without Ollama — see `backend/tests/agents/flow_intelligence/test_agent.py` for worked examples, including the exact induced-jackpot-backlog scenario the agent is evaluated against.
+
+### Running the RL environment
+
+Needs the `rl` extra (`pip install -e ".[dev,rl]"`) — heavy (torch), not installed by default. No database needed. From `backend/`:
+
+```bash
+python scripts/train_rl_policy.py --scenario ../simulation/scenarios/rl_stow_balancing.yaml \
+    --timesteps 50000 --out ../ml/models/ppo_stow_balancing.zip
+python scripts/run_rl_evaluation.py --policy ../ml/models/ppo_stow_balancing.zip \
+    --out ../data/processed/rl_evaluation_report.json
+```
+
+The second command prints a results table and reruns reproducibly (verified: re-running against the same policy file produces a byte-identical report). See `docs/RL_ENVIRONMENT_SPEC.md` for what the numbers actually showed — a reward improvement that didn't translate into a backlog improvement, reported honestly rather than oversold.
 
 ## License
 

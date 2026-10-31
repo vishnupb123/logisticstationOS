@@ -4,7 +4,7 @@ Instructions for AI coding assistants (Claude Code and others) working in this r
 
 ## What this project is
 
-StationOS is a local-first logistics operations intelligence platform. Milestones 1–5 (software foundation; Cycle-1 domain model and event infrastructure; data engineering and analytics; digital twin; agentic AI system — one agent) are complete; Milestone 6 (reinforcement-learning environment) is next. Full context: `docs/PRODUCT_VISION.md`, `docs/OPERATIONAL_DOMAIN_MODEL.md`, `docs/SYSTEM_ARCHITECTURE.md`, `docs/ENGINEERING_ROADMAP.md`, and `docs/adr/`.
+StationOS is a local-first logistics operations intelligence platform. Milestones 1–6 (software foundation; Cycle-1 domain model and event infrastructure; data engineering and analytics; digital twin; agentic AI system — one agent; reinforcement-learning environment — one decision problem) are complete; Milestone 7 (agent and RL coordination) is next. Full context: `docs/PRODUCT_VISION.md`, `docs/OPERATIONAL_DOMAIN_MODEL.md`, `docs/SYSTEM_ARCHITECTURE.md`, `docs/ENGINEERING_ROADMAP.md`, and `docs/adr/`.
 
 ## Hard rules
 
@@ -36,6 +36,11 @@ StationOS is a local-first logistics operations intelligence platform. Milestone
 - **`FakeLLMProvider` (`app/core/llm/fake.py`) is test-only, never a silent runtime default.** An agent with no real provider configured must fail loudly, not quietly return scripted output in production (`docs/AGENTIC_ARCHITECTURE.md` "Failure handling... never fabricate").
 - **Restrict an LLM-facing output schema to only the evidence categories that step is actually allowed to produce — structurally, with `Literal[...]`, not by prompt instruction.** `app/agents/flow_intelligence/schemas.py::LLMFinding` only accepts `inferred`/`hypothesis`/`prediction` — Pydantic itself rejects `observation`/`calculated` (reserved for the deterministic path) and `recommendation` (no Layer 5 to approve one). Follow this pattern for every future agent's LLM-facing schema, don't rely on the prompt alone to hold the line.
 - **`OllamaProvider` (`app/core/llm/ollama.py`) has not been verified against a real running Ollama server** — not installed on this development machine as of Milestone 5. Its request/response handling is verified against a mocked HTTP layer only (`tests/core/test_llm_ollama.py`). Don't claim or assume live-verified behavior beyond what those tests actually check; if you get a real Ollama server running, update `docs/OPEN_QUESTIONS.md` and ADR-0008's amendment once you do.
+- **The `rl` extra (`gymnasium`, `stable-baselines3`, `torch`) is heavy and never a base dependency.** Install it explicitly (`pip install -e ".[dev,rl]"`) when working on `app/rl/` or running `scripts/train_rl_policy.py`/`scripts/run_rl_evaluation.py` — don't add it to the base `dependencies` list in `backend/pyproject.toml` the way `pandas`/`pyarrow`/`simpy` are, since most of the app never touches it.
+- **A scenario YAML intended to show two policies behaving differently must be empirically verified to actually create contention before it's trusted.** Milestone 6 shipped a first RL scenario (generous hamper capacity, two stowers) where static and rule-based policies produced byte-identical trajectories — stow throughput was capacity-bound regardless of service order, so reordering never mattered. Don't assume a scenario config "should" create contention because the parameters look tight; run both baseline policies and diff their outcomes before building anything (training, evaluation, a held-out variant) on top of it. See `simulation/scenarios/rl_stow_balancing.yaml`'s tuning history in `docs/RL_ENVIRONMENT_SPEC.md`.
+- **Never claim an RL policy is "better" because its training reward went up, or because reward beat a baseline's reward.** Report the actual metric-contract outcome (e.g. jackpot backlog, stow throughput) a reward was designed to serve, not the reward itself — a reward's own shaping terms can dominate the number without the thing it was meant to proxy actually improving. This is not hypothetical: Milestone 6's PPO policy had higher reward than both baselines in 2 of 3 evaluated scenarios, but its jackpot-backlog outcome — the metric that matters — was the same or worse than the baselines' in every scenario (`docs/RL_ENVIRONMENT_SPEC.md` §"Evaluation protocol and results", ADR-0007's amendment). Always run the full baseline comparison across multiple seeds and at least one held-out scenario before reporting any result, per ADR-0007.
+- **A hard safety/anti-starvation constraint in an RL environment is enforced structurally in the environment, never left to the reward function to merely discourage.** `app/rl/env.py::AisleStowPriorityController` floors every per-aisle priority weight to `MIN_PRIORITY_WEIGHT` (never literal zero) so no aisle's stow priority can ever be fully starved by a policy's action, independent of whatever the reward happens to incentivize — per ADR-0009 and ADR-0007's "hard constraints... not reward penalties" stance.
+- **`ml/` holds regenerable trained-model artifacts and is gitignored** (`ml/*`, keeping only `.gitkeep`) — a trained policy `.zip` or an evaluation report JSON is reproducible from `scripts/train_rl_policy.py`/`scripts/run_rl_evaluation.py` plus a documented seed, not something to commit. If a result needs to be preserved for the record, put the numbers in a doc (as `docs/RL_ENVIRONMENT_SPEC.md` does), not the binary artifact.
 
 ## Before implementing a new area of the system
 
@@ -65,6 +70,12 @@ python scripts/run_simulation.py --scenario ../simulation/scenarios/normal_opera
 # Flow Intelligence Agent — see README.md "Running the Flow Intelligence Agent"
 # for a full snippet; needs a DuckDB with analytics models built (above),
 # and either a running Ollama server or FakeLLMProvider for the LLM step.
+
+# RL environment (needs the `rl` extra: pip install -e ".[dev,rl]"); no database needed
+python scripts/train_rl_policy.py --scenario ../simulation/scenarios/rl_stow_balancing.yaml \
+    --timesteps 50000 --seed 1 --out ../ml/models/ppo_stow_balancing.zip
+python scripts/run_rl_evaluation.py --policy ../ml/models/ppo_stow_balancing.zip \
+    --out ../data/processed/rl_evaluation_report.json
 
 # or, from the repo root, the full stack:
 docker compose up -d

@@ -2,7 +2,7 @@
 
 **Purpose of this file**: the persistent, single source of truth for "where StationOS actually stands," written so a new engineering session (human or AI) can continue without this conversation's history. If something here conflicts with a doc in `docs/`, the more detailed doc wins for *content*; this file wins for *current status and what to do next*.
 
-Last updated: 2026-10-31 (Milestone 5 completed this session).
+Last updated: 2026-10-31 (Milestone 6 completed this session).
 
 ---
 
@@ -14,73 +14,81 @@ Last updated: 2026-10-31 (Milestone 5 completed this session).
 | 2 — Domain model and event infrastructure (Cycle 1 slice) | ✅ Complete |
 | 3 — Data engineering and analytics | ✅ Complete |
 | 4 — Digital twin | ✅ Complete |
-| 5 — Agentic AI system | ✅ **Complete** (this session) |
-| 6 — Reinforcement-learning environment | Not started — **next** |
-| 7–10 | Not started |
+| 5 — Agentic AI system | ✅ Complete |
+| 6 — Reinforcement-learning environment | ✅ **Complete** (this session) |
+| 7 — Agent and RL coordination | Not started — **next** |
+| 8–10 | Not started |
 
 Full milestone definitions: `docs/ENGINEERING_ROADMAP.md`.
 
-## 2. A real decision this session needed from the project owner, and how it was resolved
+## 2. What was built this session (Milestone 6)
 
-Milestone 5's own roadmap entry names its first blocker explicitly: "which LLM provider backs `LLMProvider`." No API key or local LLM tooling (Ollama) was configured on this machine, and choosing a provider has real cost/account implications that aren't mine to decide unilaterally. Asked via `AskUserQuestion`; the project owner chose **a local Ollama server** (true local-first, no API key) over Anthropic/OpenAI/fake-only, and separately confirmed no key/tooling would be provided this session — build and mock-verify only. Both choices are now recorded as a dated amendment to ADR-0008, not just acted on silently.
+**Dependencies**: a new `rl` extra in `backend/pyproject.toml` (`gymnasium`, `stable-baselines3`, `torch`) — deliberately *not* a base dependency, since most of the app never touches RL. Installed/verified versions: gymnasium 1.0.0, stable-baselines3 2.9.2, torch 2.15.0.
 
-## 3. What was built this session (Milestone 5)
+**`app/simulation/model.py` refactor** (backward compatible — all 16 existing Milestone 4 simulation tests pass unchanged): added a `StowPriorityProvider` protocol and a default no-op implementation; `stower_pool` changed from a plain `simpy.Resource` to a `simpy.PriorityResource`, with each stow request's priority now sourced from `ctx.stow_priority_provider`; extracted a new public `setup_simulation(config, *, stow_priority_provider=None)` that builds the environment and context without running it, so an RL environment can step the simulation incrementally instead of only running it to completion; added a small `aisle_codes_for(config)` helper.
 
-**`LLMProvider` abstraction** (`backend/app/core/llm/`, per ADR-0008): a one-method `Protocol` (`complete_structured`), deliberately minimal. `FakeLLMProvider` — scriptable, test-only, raises loudly once its queued responses run out rather than silently returning something plausible. `OllamaProvider` — the first real adapter: POSTs to `/api/chat` with the agent's Pydantic response model's own `model_json_schema()` passed as Ollama's `format` parameter (so the *server* enforces structure, not a hopeful prompt instruction), parses and validates the result, raises `LLMProviderError` on any network/status/parse/schema failure.
+**`app/rl/` — the RL environment** (per ADR-0007's amendment, naming "aisle-level stow capacity and workload balancing under variable inbound flow" as the first problem):
+- `env.py`: `AisleStowPriorityController` converts a per-aisle action vector into SimPy priorities by **bucketing into 10 discrete levels**, not a full ranking — see §4 for why this mattered. It also enforces a hard anti-starvation floor (`MIN_PRIORITY_WEIGHT = 0.05`; no aisle's priority weight can ever reach literal zero), structurally in the environment, not as a reward penalty, per ADR-0007/ADR-0009. `StowBalancingEnv(gymnasium.Env)`: `Box` action space (one priority weight per aisle), `Box` observation space (per-aisle hamper occupancy, stower utilization, normalized jackpot backlog, episode time fraction), `step()` advances the simulation by a fixed decision interval (60s) and returns reward = `stowed_count - 0.5*max(backlog_delta, 0) - 1.0*mean_hamper_occupancy`.
+- `baselines.py`: `StaticBaselinePolicy` (uniform weights) and `RuleBasedPolicy` (priority = current occupancy), both exposing SB3's `.predict()` interface so they drop into the same evaluation harness as a trained PPO policy.
+- `scripts/train_rl_policy.py` / `scripts/run_rl_evaluation.py`: CLIs to train a PPO policy against a scenario and to evaluate static/rule-based/PPO across multiple seeds and scenarios, writing an aggregated JSON report.
+- Scenarios: `simulation/scenarios/rl_stow_balancing.yaml` (training), plus two held-out variants never used in training — `rl_stow_balancing_high_volume.yaml` (more trucks/parcels) and `rl_stow_balancing_tighter_capacity.yaml` (tighter hamper capacity).
 
-**Orchestration state machine** (`backend/app/orchestration/`, per ADR-0005): `AgentDefinition` (three plain functions: `gather_evidence`, `interpret`, `build_fallback_output` — not a base class) run by `AgentExecutor`. One checkpoint boundary: evidence is gathered once (deterministic, not retried) and persisted before the LLM-dependent `interpret` step, which retries up to `max_retries` times with a per-attempt timeout. On exhausted retries, `build_fallback_output` produces a graceful degradation (deterministic findings only, explicit `interpretation_error`) rather than a crash or a fabricated result. Every run is a row in a new PostgreSQL `agent_executions` table — the audit record. `AgentExecutor.resume()` continues a checkpointed execution without re-gathering evidence — tested by proving the evidence-gathering function's call count stays at 1 across an initial failure and a later successful resume.
+**12 new RL tests + 3 baseline tests** (79 → 91 total): environment space/determinism/termination tests, the shipped scenario actually loading, and specific tests for the priority controller's true-tie bucketing, differentiated priorities, and the anti-starvation floor (including that it doesn't clip when already at the floor).
 
-**Analytics query layer** (`backend/app/analytics/duckdb_queries.py`): finally populated, per `docs/SYSTEM_ARCHITECTURE.md`'s own prediction that this module would fill in "once an API/agent consumer needs it." Five typed, read-only functions wrapping the Milestone 3 dbt metrics (jackpot volume, WIPS, induct throughput, stow throughput, parcel dwell time) — read-only connections, so nothing here can write to the analytical database; a missing table (analytics pipeline never run) raises DuckDB's own error rather than returning a silently-empty default.
+## 3. The required evaluation, run for real
 
-**The Flow Intelligence Agent** (`backend/app/agents/flow_intelligence/`): the narrowest-scoped agent in the roster. `gather_evidence` calls exactly five named tools (`tools.py`), nothing else — the tool-permission allow-list is what the code imports, not a runtime check. `interpret` builds deterministic `observation`/`calculated` findings directly from the evidence (no LLM involved for these — they're facts, not interpretation) and separately asks the LLM for `inferred`/`hypothesis`/`prediction`-only findings via a structurally restricted schema (`LLMFinding`'s category is `Literal[INFERRED, HYPOTHESIS, PREDICTION]` — Pydantic itself rejects `observation`, `calculated`, and `recommendation`). This directly implements two of the milestone's hardest requirements as type-system guarantees, not conventions: "the LLM never performs a calculation the analytics layer should" and "no recommendation" (no Layer 5 exists yet to approve one).
+Per ADR-0007 ("no RL performance claim is published without a baseline comparison on held-out scenarios actually having run"): trained PPO for 50,000 timesteps (~23–47s wall-clock) against the training scenario, then evaluated all three policies across 5 seeds on the training scenario *and* both held-out scenarios. Re-ran the evaluation a second time and confirmed byte-identical JSON output (reproducibility check).
 
-**Migration**: `agent_executions` table (`87b9a804de1e_add_agent_executions_table.py`), autogenerated, upgrade/downgrade-verified.
+| Scenario | Policy | Reward | Stowed | Max jackpot backlog | Constraint violations |
+|---|---|---|---|---|---|
+| training | static | 25.53 ± 1.08 | 58.0 | 26.2 | 0.0 |
+| training | rule-based | 26.92 ± 0.67 | 58.6 | 27.2 | 24.2 |
+| training | PPO | **30.95 ± 0.44** | 58.0 | 27.4 | 31.4 |
+| high_volume (held out) | static | 40.30 ± 0.72 | 114.2 | 71.2 | 0.0 |
+| high_volume (held out) | rule-based | 40.47 ± 0.76 | 114.2 | 71.2 | 39.2 |
+| high_volume (held out) | PPO | **51.30 ± 1.49** | 115.6 | 72.8 | 57.0 |
+| tighter_capacity (held out) | static | 26.37 ± 0.80 | 58.0 | 32.0 | 0.0 |
+| tighter_capacity (held out) | rule-based | 26.37 ± 0.72 | 58.0 | 32.0 | 32.6 |
+| tighter_capacity (held out) | PPO | 26.63 ± 1.31 | 58.2 | 32.2 | 35.8 |
 
-**30 new tests** (49 → 79 total): LLM provider tests (11 — fake provider scripting/exhaustion, Ollama request/response/error handling against a mocked HTTP layer, no live server), orchestration tests (5 — checkpointing, retry-then-succeed, exhausted-retries-fallback, resume-without-regathering), analytics query tests (7 — against a hand-built DuckDB fixture matching the real dbt schema, no dbt dependency needed for the test suite itself), agent evaluation tests (7 — including the literal exit-criteria scenario end-to-end through the real `AgentExecutor`).
+Full results and methodology: `docs/RL_ENVIRONMENT_SPEC.md` §"Evaluation protocol and results".
 
-## 4. The exit-criteria scenario, run for real — not just the test suite
+## 4. Two real bugs found and fixed
 
-Beyond the hand-built-fixture tests, ran the **actual pipeline** this session: generated synthetic Cycle-1 events with an elevated jackpot rate (seed 777, 3 trucks × 30 parcels, `jackpot_rate=0.35`), ingested into PostgreSQL, exported to Parquet, then **truncated the export to a mid-run snapshot** (60th percentile by `occurred_at`) — deliberately capturing the station mid-operation, before all jackpot diverts had been cleared, since a *complete* closed batch always ends with diverts == clears (the same "WIPS reads 0 for a closed run" property documented in Milestone 3). Ran `dbt run` against that snapshot (not `dbt test` — a mid-run snapshot has legitimately incomplete lifecycles by construction, which isn't a data-quality bug to flag here), then ran the real `AGENT` through the real `AgentExecutor` against the resulting DuckDB file, with `FakeLLMProvider` standing in for the LLM step (no live Ollama server available). Result:
+1. **Argsort-ranking bug.** The first `AisleStowPriorityController` implementation converted action weights to priorities via a full `argsort`-based ranking. Full argsort never produces true ties, so a "uniform" action vector was *not* equivalent to FIFO (SimPy's own tie-break) — it silently imposed an arbitrary ordering. Fixed by bucketing weights into 10 discrete priority levels so equal/near-equal weights collapse to the same priority value, restoring genuine FIFO behavior under a uniform action.
+2. **Scenario-tuning bug.** The first scenario attempt (`hamper_capacity=4`, `stower_count=2`, 300s decision interval) never actually created contention: static and rule-based policies produced byte-identical trajectories, because total stow throughput was capacity-bound regardless of service order — reordering a queue that's never actually binding changes nothing. Found by directly diffing the two policies' trajectories, not assumed. Retuned to `hamper_capacity=2`, `stower_count=1`, 60s decision interval, and re-verified across 5 seeds that the policies genuinely diverge before building training/evaluation on top of it. **Lesson for next time**: a scenario config "looking" tight is not evidence it creates contention — verify empirically before trusting it.
 
-```
-[observation] Jackpot volume: 18 parcel(s) currently in jackpot (26 cumulative diverts, 8 cumulative clears).
-    evidence: ['metric_jackpot_volume']
-[observation] Work in process: 70 parcel(s) inducted but not yet stowed.
-    evidence: ['metric_wips']
-[calculated] Parcel dwell time (induct to stow) over 4 stowed parcel(s): min 305s, avg 486s, max 605s.
-    evidence: ['metric_parcel_dwell_time']
-[hypothesis] Jackpot clears are lagging diverts, consistent with stowers not yet keeping pace with sort volume this early in the run.
-    evidence: ['metric_jackpot_volume']
-interpretation_error: None
-```
+## 5. The honest finding (read this before using the trained policy for anything)
 
-This is the literal roadmap exit criterion, satisfied against real generated/ingested/transformed data, not a synthetic test double standing in for the whole pipeline.
+PPO achieved the highest reward in 2 of 3 evaluated scenarios, but its **jackpot-backlog outcome — the metric that actually matters** — was the same or marginally worse than both baselines' in *every* scenario, and PPO's reward advantage vanished entirely on the hardest held-out scenario (`tighter_capacity`). The likely cause: the reward's `mean_hamper_occupancy` shaping term (an added proxy, not a metric-contract value) dominated the outcome over the two metric-contract-backed terms (stow throughput, jackpot volume delta) that the reward was meant to serve. This is reported as a genuine first result for a narrow, falsifiable research direction — not smoothed into a success story, and not a verdict on RL as an approach. See ADR-0007's "Implementation note" amendment and `docs/RL_ENVIRONMENT_SPEC.md`'s "The honest finding" section for the full write-up.
 
-## 5. Known limitations
+**The trained policy is not wired into any agent.** Given this result, doing so now would overstate its value (`docs/OPEN_QUESTIONS.md` tracks this explicitly as "leaning: not yet").
 
-- **`OllamaProvider` has never made a real network call.** Ollama isn't installed on this machine; verification is against a mocked HTTP layer only. Installing Ollama/pulling a model wasn't done without being asked (`docs/OPEN_QUESTIONS.md` tracks this as explicit follow-up work, not a forgotten gap).
-- No dynamic, LLM-driven tool selection — `gather_evidence` always calls the same fixed five tools. Fine for this agent; a future agent needing variable evidence-gathering would need a real permission-checking registry, not built speculatively now.
-- Only one agent exists. The roster (Station Orchestrator, Investigation, Dispatch Intelligence, Planning, Reconciliation and Returns) and multi-agent coordination are explicit non-goals for this milestone.
-- `AgentExecutor`'s checkpoint boundary is deliberately singular (evidence before interpretation) — sufficient for one agent with one LLM-dependent step; a more complex agent might need more than one checkpoint, which the current design doesn't preclude but also doesn't yet demonstrate.
-- The tests-vs-dev-database isolation gap from Milestone 2 is unchanged; hit it again mid-session (ran `pytest` between seeding steps, which dropped tables and staled `alembic_version` as expected) and recovered the same documented way.
+## 6. Known limitations
 
-## 6. Open questions
+- The reward function as designed is not yet aligned with the metric that matters (jackpot backlog) — revisit the weighting, or drop the occupancy-shaping term for a sparser but more aligned signal, before training again. Tracked in `docs/OPEN_QUESTIONS.md`.
+- PPO was trained against one fixed world instantiation (same scenario seed every training episode). Domain randomization (varying seeds/parameters during training) is a standard fix for exactly the generalization failure seen on `tighter_capacity`, and hasn't been tried yet. Tracked in `docs/OPEN_QUESTIONS.md`.
+- Only one decision problem is formalized; the roster of other candidate RL problems in `docs/RL_ENVIRONMENT_SPEC.md` remains unbuilt by design (ADR-0007: one narrow problem at a time).
+- `OllamaProvider` live-verification gap from Milestone 5 is unchanged (still not exercised against a real Ollama server).
+- The tests-vs-dev-database isolation gotcha from Milestone 2 is unchanged (not hit this session's RL work specifically, since RL tests need no database — only resurfaced in the usual manual-dev-then-pytest sequence).
 
-Full register: `docs/OPEN_QUESTIONS.md`. Resolved this session: which LLM provider (Ollama, project-owner decision). New this session: live `OllamaProvider` verification pending; dynamic tool-selection deferred. Unchanged and highest-priority: metric formulas still `requires_validation` for the organization-specific metrics; the dbt/`event_types.py` manual-sync gap; scenario/station-profile abstraction still not built (nothing needs a second layout yet).
+## 7. Open questions
 
-## 7. Security considerations
+Full register: `docs/OPEN_QUESTIONS.md`. Resolved this session: which narrow RL problem (already resolved prior session) was formalized, implemented, and evaluated — reward design is explicitly *not* resolved (leaning: revisit the weighting). New this session: does domain-randomized training generalize better (unresolved); should the trained PPO policy ever be wired into an agent as evidence (leaning: not yet). Unchanged and highest-priority: metric formulas still `requires_validation`; the dbt/`event_types.py` manual-sync gap; live `OllamaProvider` verification pending.
 
-No change to governance stance. `OllamaProvider` requires no API key/credential — it's a local HTTP call to a server the developer runs themselves, so there's nothing secret to protect in `backend/.env.example`'s new `OLLAMA_BASE_URL`/`OLLAMA_MODEL` entries. The Flow Intelligence Agent's structural inability to emit a `recommendation` category (`LLMFinding`'s `Literal` restriction) is a concrete, type-enforced instance of ADR-0009's governance stance — not yet exercised against real approval flows (Layer 5 doesn't exist), but already impossible to bypass accidentally once Layer 5 does.
+## 8. Security considerations
 
-## 8. Recommended next milestone
+No change to governance stance. The anti-starvation floor in `AisleStowPriorityController` (`MIN_PRIORITY_WEIGHT`) is a concrete, structural instance of ADR-0009's "hard constraints at the environment level, not reward penalties" stance — a policy's action can shift priority but can never fully starve an aisle, regardless of what the reward function happens to reward. The RL environment still runs entirely offline against the digital twin (never against live operational state, never against PostgreSQL) — same ADR-0006 boundary the digital twin itself observes. No new secrets, credentials, or real data introduced.
 
-**Milestone 6 — Reinforcement-learning environment** (`docs/ENGINEERING_ROADMAP.md`): a Gymnasium environment wrapping the Milestone 4 digital twin, for the narrow decision problem the project owner already selected (ADR-0007 amendment): aisle-level stow capacity and workload balancing under variable inbound flow. State/action/reward design is still open work — naming the problem didn't settle its formalization.
+## 9. Recommended next milestone
 
-## 9. Exact instructions for the next session
+**Milestone 7 — Agent and RL coordination** (`docs/ENGINEERING_ROADMAP.md`): bring the Milestone 5 agentic layer and the Milestone 6 RL layer into the same typed-interface coordination model described in `docs/SYSTEM_ARCHITECTURE.md` Layer 4 ("an RL policy is never given authority an agent's evidence pipeline hasn't governed"). Given §5's honest finding, this is **not** "wire PPO's recommendations into the Flow Intelligence Agent" — the current policy isn't demonstrably better than the rule-based baseline on the metric that matters. Treat Milestone 7 as building the coordination *mechanism and governance path*, independent of whether any specific trained policy is good enough yet to flow through it.
 
-1. Read this file, then `docs/ENGINEERING_ROADMAP.md` Milestone 6, then `docs/RL_ENVIRONMENT_SPEC.md` and ADR-0007 (including its amendment).
-2. Confirm Milestones 1–5 still work: `cd backend && pip install -e ".[dev,analytics]" && ruff check .`; bring up Postgres, `alembic upgrade head` (two migrations now), `pytest -q` (79 tests). The Flow Intelligence Agent's own tests don't need Postgres or dbt for most of them — only `tests/orchestration/` and the end-to-end agent tests do.
-3. Milestone 6 depends on the Milestone 4 digital twin as its environment (`docs/DIGITAL_TWIN_SPEC.md` §"Relationship to RL") — re-familiarize with `app/simulation/model.py`'s resource-contention design before wrapping it; the RL environment's state/action space should reflect what the twin actually models (hamper levels, induct/stower contention), not an idealized version of it.
-4. This is explicitly a research-direction milestone (`docs/RL_ENVIRONMENT_SPEC.md`: "treat this as a research hypothesis, not a result to assume") — resist the urge to over-claim results; a baseline comparison that actually ran is the only thing worth reporting as a finding.
-5. If a live Ollama server becomes available in a future session (this one didn't have one), that's a good opportunity to close the "live verification pending" open question before building further agents on top of the same provider — not required for Milestone 6, but worth doing opportunistically.
-6. When Milestone 6 is done: update this file's status table and date, run the full verification sequence from step 2 one more time and report the actual result, and update `docs/OPEN_QUESTIONS.md` for anything resolved or newly found.
+## 10. Exact instructions for the next session
+
+1. Read this file, then `docs/ENGINEERING_ROADMAP.md` Milestone 7, then `docs/SYSTEM_ARCHITECTURE.md` Layer 4, `docs/AGENTIC_ARCHITECTURE.md`, and `docs/RL_ENVIRONMENT_SPEC.md`'s "Relationship to the agentic layer" section.
+2. Confirm Milestones 1–6 still work: `cd backend && pip install -e ".[dev,analytics,rl]" && ruff check .`; bring up Postgres, `alembic upgrade head` (two migrations), `pytest -q` (91 tests). RL tests need no database or dbt.
+3. Before building anything that lets an RL policy's output influence an agent's findings, re-read §5 of this file — the current trained policy's result is a cautionary one, not a positive one. If Milestone 7 needs *a* policy to demonstrate coordination with, either revisit the reward design first (tracked in `docs/OPEN_QUESTIONS.md`) or be explicit that the coordination mechanism is being demonstrated independent of policy quality.
+4. Don't jump ahead of the roadmap (CLAUDE.md hard rule 4) — Milestone 7 is "agent and RL coordination," not predictive intelligence (Milestone 8) or governance (Milestone 9).
+5. If a live Ollama server becomes available, closing that open-question gap is a good opportunistic side task, not required for Milestone 7.
+6. When Milestone 7 is done: update this file's status table and date, run the full verification sequence from step 2 one more time and report the actual result, and update `docs/OPEN_QUESTIONS.md` for anything resolved or newly found.
