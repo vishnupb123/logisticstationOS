@@ -29,6 +29,7 @@ import random
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import Protocol
 
 import simpy
 
@@ -83,6 +84,24 @@ class _Counter:
     value: int = 0
 
 
+class StowPriorityProvider(Protocol):
+    """How urgently should a free stower pick up this aisle's parcel
+    next? Lower returned value = served first (SimPy PriorityResource
+    convention). Milestone 6's RL environment is the first real
+    implementation of this — see app/rl/env.py — but the twin itself
+    stays usable without any RL involved: the default below makes every
+    aisle equal priority, which is exactly the FIFO-by-arrival behavior
+    this model had before Milestone 6 introduced the hook.
+    """
+
+    def priority_for(self, aisle_code: str) -> int: ...
+
+
+class _DefaultStowPriority:
+    def priority_for(self, aisle_code: str) -> int:
+        return 0
+
+
 class _JackpotSignal:
     """A periodically-replaced SimPy event: every parcel currently
     waiting in jackpot yields on `.wait()`; `.clear()` wakes all of them
@@ -111,10 +130,11 @@ class _Context:
     aisle_codes: list[str]
     hampers: dict[str, _Hamper]
     induct_station: simpy.Resource
-    stower_pool: simpy.Resource
+    stower_pool: simpy.PriorityResource
     jackpot_signal: _JackpotSignal
     parcels_in_flight: _Counter
     trucks_remaining: _Counter
+    stow_priority_provider: StowPriorityProvider = field(default_factory=_DefaultStowPriority)
     events: list[EventEnvelope] = field(default_factory=list)
 
     def at(self, now: float) -> datetime:
@@ -273,7 +293,8 @@ def _parcel_process(ctx: _Context, truck_id: uuid.UUID, truck_external_code: str
         # Loop retries the same assigned aisle — hamper state is
         # re-checked fresh; stowers may have drained it by now.
 
-    with ctx.stower_pool.request() as req:
+    priority = ctx.stow_priority_provider.priority_for(aisle_code)
+    with ctx.stower_pool.request(priority=priority) as req:
         yield req
         yield ctx.env.timeout(ctx.config.parcels.stow_duration_seconds)
 
@@ -313,13 +334,24 @@ def _pick_classification(rng: random.Random, exception_rate: float) -> ParcelCla
 # --- Entry point ------------------------------------------------------
 
 
-def run_scenario(config: ScenarioConfig) -> SimulationResult:
-    rng = random.Random(config.seed)
-    env = simpy.Environment()
-
-    aisle_codes = [f"A{i}" for i in range(1, config.station_layout.cluster_a_aisle_count + 1)] + [
+def aisle_codes_for(config: ScenarioConfig) -> list[str]:
+    return [f"A{i}" for i in range(1, config.station_layout.cluster_a_aisle_count + 1)] + [
         f"B{i}" for i in range(1, config.station_layout.cluster_b_aisle_count + 1)
     ]
+
+
+def setup_simulation(
+    config: ScenarioConfig, *, stow_priority_provider: StowPriorityProvider | None = None
+) -> tuple[simpy.Environment, _Context]:
+    """Builds the environment and spawns every process, but does not
+    run it — the caller controls `env.run(...)`. `run_scenario()` below
+    runs it to completion in one call; app/rl/env.py (Milestone 6) runs
+    it in small increments between policy decisions instead. Both share
+    this one setup path rather than each duplicating it.
+    """
+    rng = random.Random(config.seed)
+    env = simpy.Environment()
+    aisle_codes = aisle_codes_for(config)
     hampers = {
         code: _Hamper(capacity=config.station_layout.hamper_capacity) for code in aisle_codes
     }
@@ -331,10 +363,11 @@ def run_scenario(config: ScenarioConfig) -> SimulationResult:
         aisle_codes=aisle_codes,
         hampers=hampers,
         induct_station=simpy.Resource(env, capacity=config.resources.induct_capacity),
-        stower_pool=simpy.Resource(env, capacity=config.resources.stower_count),
+        stower_pool=simpy.PriorityResource(env, capacity=config.resources.stower_count),
         jackpot_signal=_JackpotSignal(env),
         parcels_in_flight=_Counter(),
         trucks_remaining=_Counter(value=config.truck_arrivals.truck_count),
+        stow_priority_provider=stow_priority_provider or _DefaultStowPriority(),
     )
 
     for truck_index in range(config.truck_arrivals.truck_count):
@@ -346,6 +379,11 @@ def run_scenario(config: ScenarioConfig) -> SimulationResult:
 
     env.process(_jackpot_clearing_process(ctx))
 
+    return env, ctx
+
+
+def run_scenario(config: ScenarioConfig) -> SimulationResult:
+    env, ctx = setup_simulation(config)
     env.run()
 
     return SimulationResult(

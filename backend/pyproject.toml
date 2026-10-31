@@ -42,6 +42,15 @@ analytics = [
     "dbt-core>=1.8,<2.0",
     "dbt-duckdb>=1.8,<2.0",
 ]
+# Not a base runtime dependency — offline RL training/evaluation
+# (docs/ENGINEERING_ROADMAP.md M6) is a research tool run via
+# backend/scripts/, not something the FastAPI app invokes at request
+# time. torch is heavy; keeping it out of the base install matters.
+rl = [
+    "gymnasium>=0.29,<1.1",
+    "stable-baselines3>=2.3,<3.0",
+    "torch>=2.2,<3.0",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
