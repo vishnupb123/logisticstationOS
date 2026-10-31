@@ -1,0 +1,39 @@
+# docs/DIGITAL_TWIN_SPEC.md scenario catalog: "Normal volume" — baseline
+# inbound volume and resource levels.
+#
+# station_layout is deliberately much smaller than the full synthetic
+# reference station (54+68 aisles) — at that scale, 125 parcels spread
+# uniformly across 122 aisles would almost never fill a 40-capacity
+# hamper, so jackpot diversion (the actual point of modelling finite
+# hamper capacity rather than assuming infinite throughput) would never
+# be exercised. 10 aisles with 3-capacity hampers makes contention show
+# up at a small, fast-to-simulate scale instead.
+name: normal_operations
+description: >
+  Baseline Cycle-1 scenario: trucks arrive on a regular schedule with
+  typical resource levels relative to inbound volume.
+seed: 1001
+
+station_layout:
+  cluster_a_aisle_count: 5
+  cluster_b_aisle_count: 5
+  hamper_capacity: 3
+
+truck_arrivals:
+  truck_count: 5
+  first_arrival_offset_minutes: 0
+  arrival_interval_minutes: 10
+  pallet_count_min: 4
+  pallet_count_max: 10
+  unload_duration_minutes: 10
+
+parcels:
+  parcels_per_truck: 25
+  exception_rate: 0.05
+  induct_duration_seconds: 3
+  stow_duration_seconds: 20
+
+resources:
+  induct_capacity: 2
+  stower_count: 3
+  jackpot_clear_interval_minutes: 5

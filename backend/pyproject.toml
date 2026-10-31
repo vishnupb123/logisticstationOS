@@ -13,6 +13,12 @@ dependencies = [
     "psycopg[binary]>=3.2,<4.0",
     "duckdb>=1.0,<2.0",
     "structlog>=24.1,<25.0",
+    # app/simulation (Milestone 4) and its Parquet output — core app
+    # functionality, not a side tool, unlike dbt below.
+    "simpy>=4.1,<5.0",
+    "pyyaml>=6.0,<7.0",
+    "pandas>=2.2,<3.0",
+    "pyarrow>=17.0,<18.0",
 ]
 
 [project.optional-dependencies]
@@ -22,12 +28,10 @@ dev = [
     "httpx>=0.27,<1.0",
     "ruff>=0.5,<1.0",
 ]
-# Not a base runtime dependency — the API doesn't invoke dbt or write
-# Parquet itself; these back scripts/export_events_to_parquet.py and the
-# dbt project at backend/analytics/ (docs/ENGINEERING_ROADMAP.md M3).
+# Not a base runtime dependency — the API never invokes dbt itself; this
+# backs the dbt project at backend/analytics/ (docs/ENGINEERING_ROADMAP.md
+# M3), run as a separate CLI tool.
 analytics = [
-    "pandas>=2.2,<3.0",
-    "pyarrow>=17.0,<18.0",
     # Pinned to the v1 CLI/project format (dbt now ships a v2) — v2 isn't
     # evaluated yet; revisit deliberately, don't drift onto it via a lax
     # version range.

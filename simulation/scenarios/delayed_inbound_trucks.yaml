@@ -1,0 +1,37 @@
+# docs/DIGITAL_TWIN_SPEC.md scenario catalog: "Delayed inbound trucks" —
+# shifted truck arrival times, compressing the downstream induct window.
+#
+# Same station layout and resource levels as normal_operations.yaml —
+# only the truck_arrivals timing differs — so any difference in
+# downstream congestion (induct queueing, jackpot diversion) is
+# attributable to the arrival schedule, not a confounded resource change.
+name: delayed_inbound_trucks
+description: >
+  All trucks arrive later than scheduled and in a more compressed
+  window, squeezing the downstream induct schedule relative to
+  normal_operations.
+seed: 1002
+
+station_layout:
+  cluster_a_aisle_count: 5
+  cluster_b_aisle_count: 5
+  hamper_capacity: 3
+
+truck_arrivals:
+  truck_count: 5
+  first_arrival_offset_minutes: 90   # 1.5h late vs. normal_operations' immediate start
+  arrival_interval_minutes: 3        # compressed from 10 to 3 minutes apart
+  pallet_count_min: 4
+  pallet_count_max: 10
+  unload_duration_minutes: 10
+
+parcels:
+  parcels_per_truck: 25
+  exception_rate: 0.05
+  induct_duration_seconds: 3
+  stow_duration_seconds: 20
+
+resources:
+  induct_capacity: 2
+  stower_count: 3
+  jackpot_clear_interval_minutes: 5
