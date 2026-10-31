@@ -37,7 +37,7 @@ Analytical services (app/analytics) ──▶ API ──▶ frontend dashboards 
 
 ## Event schema conventions
 
-Every domain event (Milestone 2+) carries:
+Every domain event carries:
 
 | Field | Purpose |
 |---|---|
@@ -48,8 +48,11 @@ Every domain event (Milestone 2+) carries:
 | `occurred_at` | When the event happened in the domain (not when it was recorded) |
 | `recorded_at` | When the system persisted it — distinguishing the two makes delayed/out-of-order events detectable |
 | `provenance` | Where the event came from (which scanner/service/synthetic generator) |
+| `source_kind` | What *kind* of fact this is — `physical_observation`, `system_recorded`, `inferred`, or `simulated` — never conflated with each other downstream |
 
-Explicit handling is required (not optional) for: duplicate events (via `idempotency_key`), delayed events (via `occurred_at` vs `recorded_at` skew), missing events (gaps detectable via expected-sequence checks per entity), and out-of-order events (sort by `occurred_at`, not arrival order). The concrete mechanism (outbox table, append-only event table, etc.) is deferred to Milestone 2 — see ADR-0004 for why this starts as a reliable modular implementation rather than a message broker.
+Explicit handling is required (not optional) for: duplicate events (via `idempotency_key`), delayed events (via `occurred_at` vs `recorded_at` skew), missing events (gaps detectable via expected-sequence checks per entity), and out-of-order events (sort by `occurred_at`, not arrival order).
+
+**Implemented (Milestone 2)**: a single append-only `events` table (`backend/app/events/models.py`), not one table per event type — ADR-0004's "append-only event table" resolved concretely this way (`docs/OPEN_QUESTIONS.md`). `EventStore.append()` (`backend/app/events/store.py`) enforces the idempotency guarantee at the database level via a unique constraint on `idempotency_key` with `INSERT ... ON CONFLICT DO NOTHING`, not just application discipline. Current entity state (a parcel's or truck's row under `app/domain/`) is a **projection**, rebuilt by replaying that entity's full event history in `occurred_at` order every time a new event arrives for it (`backend/app/services/event_ingestion.py`) — this is what makes out-of-order and duplicate delivery safe: the projection is a pure function of the event log's content, never of arrival order. An event whose predecessor is missing or wrong (e.g. a stow event with no prior sort) is still persisted and still projected from — never silently dropped — but the projection is flagged `lifecycle_consistent = False` with a human-readable note, which is the concrete form of "never assume virtual state matches physical state."
 
 ## Optional analytical warehouse abstraction
 

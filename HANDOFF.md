@@ -2,7 +2,7 @@
 
 **Purpose of this file**: the persistent, single source of truth for "where StationOS actually stands," written so a new engineering session (human or AI) can continue without this conversation's history. If something here conflicts with a doc in `docs/`, the more detailed doc wins for *content*; this file wins for *current status and what to do next*.
 
-Last updated: 2026-10-31 (Milestone 1 completed this session).
+Last updated: 2026-10-31 (Milestone 2 completed this session).
 
 ---
 
@@ -10,88 +10,84 @@ Last updated: 2026-10-31 (Milestone 1 completed this session).
 
 | Milestone | Status |
 |---|---|
-| 1 — Software foundation | ✅ **Complete** (this session) |
-| 2 — Domain model and event infrastructure | Not started — **next** |
-| 3–10 | Not started |
+| 1 — Software foundation | ✅ Complete |
+| 2 — Domain model and event infrastructure (Cycle 1 slice) | ✅ **Complete** (this session) |
+| 3 — Data engineering and analytics | Not started — **next** |
+| 4–10 | Not started |
 
-Full milestone definitions: `docs/ENGINEERING_ROADMAP.md` (rewritten this session to the ten-milestone structure given in the implementation-phase handoff — see §4 below).
+Full milestone definitions: `docs/ENGINEERING_ROADMAP.md`.
 
 ## 2. What was true before this session
 
-- One commit existed (`ef00dab`): the architecture/documentation set (README, CLAUDE.md, HANDOFF.md, `.gitignore`, `docs/` including ten ADRs).
-- A backend skeleton existed on disk but was **uncommitted**: FastAPI app, settings, structured logging, PostgreSQL/DuckDB connectors, `/health` + `/health/ready`, Alembic wired to `Base.metadata` (no model migrations), a passing two-test pytest suite. No `docker-compose.yml`, no CI workflow, no `Dockerfile`.
-- `backend/alembic/versions/` existed as an empty directory (untracked — git doesn't track empty dirs).
+Milestone 1 was complete and committed (4 commits: backend skeleton, Docker Compose, CI, docs reconciliation). No domain model, no events, no migrations beyond the empty `alembic/versions/` directory. `backend/app/domain/`, `app/repositories/`, `app/services/` existed only as empty placeholders.
 
-## 3. What changed this session (Milestone 1 closed out)
+## 3. What was built this session (Milestone 2)
 
-**Verified, not just assumed, correct:**
-- Installed `backend` in a throwaway venv; `ruff check .` initially found one real issue (unsorted imports in `alembic/env.py`) — fixed with `ruff check --fix`, re-verified clean.
-- `pytest` — 2 passed, before and after the lint fix.
-- Built and ran the full Docker Compose stack (`docker compose up -d --build`), hit `/health` and `/health/ready` over HTTP, and got `{"status":"ok","dependencies":{"postgres":"ok","duckdb":"ok"}}` — a real Postgres connection and a real DuckDB file write, not a mock. Confirmed the DuckDB file landed in the host-mounted `./data/analytics/` directory, matching non-Docker behavior. Then tore the stack down (`docker compose down`) and removed the generated `.duckdb` file (it's gitignored, this was just test residue).
+Scoped deliberately to **Cycle 1 only** (truck → induct → sort → stow), per the roadmap's own non-goal boundary — Pick & Stage/dispatch/routes/waves/vans/returns and the high-value/sideline/future-date/exception cage workflows are **not** modeled. A parcel classified as anything other than `normal_cycle1` simply stops at a `pending_exception` state; that's a scope boundary, not a bug.
 
-**Bug found and fixed before it shipped**: `app/db/duckdb.py` resolves its data path as `Path(__file__).resolve().parents[3]`, relying on `backend/` sitting directly under the repo root. A Dockerfile that copied only `backend/`'s contents into `/app` would collapse that path and silently write the DuckDB file to the wrong place inside the container. Fixed by building the image from the **repo root** as context (`docker-compose.yml` → `build.context: .`, `build.dockerfile: backend/Dockerfile`) and having the Dockerfile `COPY backend/ ./` into `/app/backend`, preserving the same nesting depth as local dev. Verified fixed by the DuckDB-file-location check above.
+**Domain model** (`backend/app/domain/`): `Station`, `Truck`, `Aisle`, `Hamper`, `Stower`, `Bag`, `Parcel` — SQLAlchemy 2.0 declarative models. `classification`/`lifecycle_state`/`status` are stored as plain strings (validated at the application layer via `app/domain/enums.py` `StrEnum` classes), not Postgres `ENUM` types, so adding a new value later doesn't need an `ALTER TYPE` migration.
 
-**Port collisions found and resolved**: this machine already has unrelated containers (`continuum-m0-postgres-1`, `continuum-m0-api-1`) bound to host ports 5432 and 8000. `docker-compose.yml` remaps StationOS to host ports **5433** (Postgres) and **8010** (API) — the internal Docker network still uses 5432/8000 between the `api` and `postgres` services, so this is purely a host-side convenience remap. **If your machine doesn't have this conflict, these numbers are arbitrary — change them back to 5432/8000 in `docker-compose.yml` if you prefer.**
+**Event infrastructure** (`backend/app/events/`, new package — not in the original module list, added as the concrete home for Layer 2's event ingestion/storage, alongside `app/db`):
+- `schemas.py` — the `EventEnvelope` (common fields: `event_id`, `event_type`, `entity_type`, `entity_id`, `correlation_id`, `occurred_at`, `source`, `source_kind`, `provenance`, `schema_version`, `idempotency_key`, `payload`) and seven per-event-type Pydantic payload schemas (`truck.arrived`, `truck.unloaded`, `parcel.inducted`, `parcel.classified`, `parcel.sort_attempted`, `parcel.jackpot_cleared`, `parcel.stowed`), registered in `EVENT_PAYLOAD_SCHEMAS` keyed by `(event_type, schema_version)`.
+- `models.py` — a single append-only `events` table (one table, not one per event type — resolves the "exact event-ingestion mechanism" open question from the architecture phase).
+- `store.py` — `EventStore`: `append()` uses `INSERT ... ON CONFLICT DO NOTHING` against a real unique constraint on `idempotency_key` (database-enforced idempotency, not just application discipline); `list_for_entity()` orders by `(occurred_at, recorded_at)`.
 
-**Files created:**
-- `docker-compose.yml` (repo root) — Postgres + API services, healthcheck-gated startup, named volume for Postgres data, bind mounts for `./backend` (hot reload) and `./data` (DuckDB persistence).
-- `backend/Dockerfile` — see the bug note above for why its `COPY`/`WORKDIR` structure matters.
-- `.dockerignore` (repo root).
-- `backend/.env.example` — placeholder values only, mirrors `Settings` defaults.
-- `.github/workflows/ci.yml` — `ruff check` + `pytest` on push/PR to `main`, against a real `postgres:16-alpine` service container (not a mock), Python 3.12.
-- `backend/alembic/versions/.gitkeep` — makes the empty migrations directory trackable.
+**Projection** (`backend/app/services/event_ingestion.py`): current parcel/truck state is **rebuilt from scratch by replaying the entity's full event history, in `occurred_at` order, every time a new event arrives for it** — not updated incrementally. This is what makes projection provably order-independent and idempotent: tested by shuffling the same event set ten different ways and asserting identical final state, and by replaying the same events twice and asserting the state is unchanged (duplicates are flagged, not double-counted). An event whose predecessor state doesn't match (missing induct, stow-without-sort, a second conflicting sort) is **still persisted and still projected from** — the projector trusts the latest real signal for state but sets `lifecycle_consistent = False` with a human-readable note. This is the literal implementation of "don't assume virtual state matches physical state."
 
-**Files modified:**
-- `backend/alembic/env.py` — lint fix only (import ordering), no behavior change.
-- `README.md` — Docker Compose quickstart (Option A) alongside the existing venv quickstart (Option B); "Current status" section updated to "Milestone 1 complete"; noted the non-default ports and why.
-- `CLAUDE.md` — status line updated; roadmap reference updated to ten milestones; commands section now mentions `docker compose up -d` and a stronger "actually run tests, report what happened" instruction.
-- `docs/ENGINEERING_ROADMAP.md` — **rewritten** to the ten-milestone structure supplied in the implementation-phase handoff (see §4).
-- `docs/adr/0007-rl-research-scope.md` — amended (not silently edited — amendment is dated and explained) to record that the project owner selected the first RL problem directly.
-- `docs/RL_ENVIRONMENT_SPEC.md` — records the selected first RL problem (aisle-level stow capacity and workload balancing under variable inbound flow) and the candidate state/action variables that came with it; everything downstream of naming the problem (state/action/reward formalization) is still explicitly open.
-- `docs/OPEN_QUESTIONS.md` — marks "which narrow RL problem" `resolved`; unblocks the reward-function question (no longer waiting on problem selection, still genuinely open).
+**Repositories** (`backend/app/repositories/`): typed lookups for trucks, parcels, aisles (by code), stowers/bags (get-or-create by code).
 
-**Nothing was rewritten that didn't need to be.** No domain models, events, agents, simulation, or RL code were added — that's Milestones 2–6, not this one.
+**Reference-data seeding** (`backend/app/services/seed.py`): idempotent `seed_station()` / `seed_aisles()` — 122 aisles (A1–A54, B1–B68, the synthetic reference defaults), each with one hamper.
 
-## 4. Architectural/roadmap reconciliation performed
+**Synthetic generator** (`backend/app/services/synthetic_events.py` + `backend/scripts/generate_synthetic_events.py`): deterministic given a seed — **every** random draw, including entity UUIDs and each event's own `event_id` (which Pydantic would otherwise fill from the unseeded global `uuid.uuid4()`), comes from one seeded `random.Random` instance. This was a real bug caught by the determinism test, not a theoretical concern — see §6.
 
-The implementation-phase handoff provided a more detailed ten-milestone plan than this repo's original nine-milestone (M0–M8) sketch. Per the handoff's own instruction ("do not silently change architecture... update the relevant architecture document... preserve traceability"):
+**Migration**: `backend/alembic/versions/e3e6c2908dde_cycle_1_domain_and_event_model.py`, autogenerated (after fixing `alembic/env.py`, which claimed models "register themselves by being imported" but nothing actually imported them — also a real bug, fixed). Verified both `upgrade head` and `downgrade base` against a live Postgres.
 
-- `docs/ENGINEERING_ROADMAP.md` was rewritten with a revision note at the top explaining the supersession and why (more detail, the original governance milestone split into two — M7 "agent/RL coordination" and M9 "governance and reliability" — and a new M8 "predictive intelligence" that the product vision always implied but never had its own milestone).
-- No core architecture decision (the data stack, the layering, the governance stance) changed — this was a roadmap-detail reconciliation, not a stack or principle change, so no *new* ADR was warranted. The one decision that *was* newly made — the first RL problem — got a dated amendment to the existing ADR-0007 rather than a fresh ADR, since it's a scope-instance decision within an already-accepted ADR, not a new category of decision.
+**Tests**: 33 total, in `backend/tests/{events,services}/`. Pure logic (projector, generator, payload schemas — no DB) vs. integration (real Postgres via a new `db_session` fixture in `conftest.py`, skipping honestly via `pytest.skip` when Postgres isn't reachable, never mocked). All pass against a live Postgres; the 8 DB-dependent tests skip cleanly (not fail) when Postgres is down — verified both ways.
 
-## 5. Environment observations (this machine, this session)
+**CI**: added an `alembic upgrade head` step before `pytest`, so CI now verifies the migration applies cleanly to a fresh database on every run.
 
-- Python 3.12.3, Docker 29.7.2, git 2.39.5 — all confirmed working by actually building and running the stack.
-- `gh` CLI still not installed (unchanged from the architecture-phase handoff).
-- **Two other unrelated Docker projects are running on this machine** (`continuum-m0-postgres-1` on 5432, `continuum-m0-api-1` on 8000) — not touched, not stopped; StationOS's Compose file was adjusted around them instead. Worth knowing if a future session also hits a port conflict and is tempted to investigate what's "wrong" — nothing is wrong, it's just a shared dev machine.
+## 4. Real bugs found and fixed this session (not just "wrote code, assumed it worked")
+
+1. **Non-deterministic "deterministic" generator**: `SyntheticScenario`/`generate_cycle1_events` claimed determinism from a seed, but every UUID (`truck_id`, `parcel_id`, and every `EventEnvelope.event_id`) was drawn from the global, unseeded `uuid.uuid4()`. Caught by `test_same_seed_produces_identical_output` actually failing. Fixed by threading the seeded `rng` through every helper and generating UUIDs via `uuid.UUID(int=rng.getrandbits(128), version=4)`.
+2. **A Pydantic cross-field validator that never ran**: `ParcelSortAttemptedPayload`'s `aisle_code`-required-when-sorted rule was a `@field_validator("aisle_code")`, which Pydantic v2 does not invoke when a field is omitted and falls back to its default (`validate_default=True` would be needed) — so a payload missing `aisle_code` entirely sailed through unvalidated. Caught by two tests failing with "DID NOT RAISE". Fixed by switching to a `@model_validator(mode="after")`, which always runs.
+3. **Alembic silently not registering models**: `alembic/env.py`'s own comment claimed "models register themselves by being imported," but nothing imported `app.domain` or `app.events.models` — the first autogenerate would have produced an empty migration. Fixed before it caused a real problem, by actually running autogenerate and checking its output rather than trusting the comment.
+4. **Local-dev footgun, documented not silently worked around**: running the CLI seeding script and then `pytest` against the same Postgres instance leaves Alembic's `alembic_version` table out of sync with reality (pytest's schema fixture does `Base.metadata.create_all`/`drop_all` directly, bypassing Alembic entirely). Hit this personally mid-session; the fix for *this session* was dropping `alembic_version` and re-running `upgrade head`; the real fix (a separate test database) is tracked as an open question, not built yet.
+5. **Tests that asserted table-wide row counts, not their own**: `test_full_cycle1_stream_ingests_idempotently_and_projects_correctly` asserted `len(db_session.query(Truck).all()) == scenario.truck_count` — which only held by accident, because the table happened to be empty when first written. Final verification deliberately re-created that condition: seeded unrelated, *committed* dev data via the CLI script (bypassing the test's own rolled-back transaction entirely), then re-ran the suite — it failed exactly as it should have (5 trucks found, 2 expected). Fixed by scoping every assertion to the entity ids the test itself generated, and re-verified green with the committed noise data still present in the table, not just after clearing it. This is the same root cause as #4 (DB-dependent tests sharing state with manual dev work) but a different, more fundamental fix: tests should never assume a shared table starts empty, regardless of whether the database is eventually split from dev's.
+
+## 5. Verification performed (not claimed without running)
+
+- `ruff check .` — clean, across all new and generated (migration) code.
+- `pytest -q` — 33 passed against a live Postgres; 25 passed / 8 skipped with Postgres stopped (confirmed the skip path is honest, not a silent pass).
+- `alembic upgrade head` then `alembic downgrade base` then `alembic upgrade head` again — all clean, against a real database, via Docker Compose's Postgres (remapped to host port 5433 per Milestone 1's note).
+- Ran `backend/scripts/generate_synthetic_events.py --seed 42 --seed-db` for real (not just its underlying functions via tests): generated 126 events for 3 trucks × 10 parcels, seeded 122 aisles, ingested with 0 errors; re-ran the identical command and confirmed all 126 events reported as duplicates (true idempotent replay, via the actual CLI entry point, not just the service layer in isolation); queried Postgres directly and confirmed row counts matched expectations (3 trucks all `unloaded`, 30 parcels all `stowed`, 122 aisles).
 
 ## 6. Known limitations
 
-- CI has never actually run on GitHub yet (the workflow file is pushed in this session's commits, but no push/PR has triggered it as of this writing) — the "CI passes" claim in this file is based on running the same lint/test commands locally and via Docker Compose, not on a confirmed GitHub Actions run. Check the Actions tab after pushing to confirm.
-- The Postgres named volume (`stationos_postgres_data`) and any local images built during verification remain on this machine; `docker compose down` was run (removes containers/network) but not `docker compose down -v` (would remove the volume too) — left in place since destroying a named volume is the kind of action to default against unless asked.
-- `alembic/versions/` is now tracked but still has zero real migrations — don't mistake the `.gitkeep` for implementation progress.
+- Tests and local manual dev share one Postgres database/volume — see §4.4 and `docs/OPEN_QUESTIONS.md`. Low urgency (one developer, one machine) but real.
+- No HTTP endpoint for event ingestion yet — everything is a direct Python service call, used today only by the generator script. Deferred until there's an actual consumer that needs one (the frontend is Milestone 10; an agent needing to write back is Milestone 5+).
+- The high-value/sideline/future-date/exception cage workflows are unmodeled by design (see §3) — a classified-but-not-`normal_cycle1` parcel's event stream just stops; this is not a reconciliation gap to "fix," it's out of this milestone's scope.
+- `classification`/`lifecycle_state`/`status` as plain strings (not Postgres `ENUM`) trades DB-level constraint strictness for migration flexibility — a typo'd string value would currently only be caught by the Python-level `StrEnum`, not by the database itself.
 
-## 7. Open questions (full register: `docs/OPEN_QUESTIONS.md`)
+## 7. Open questions
 
-Highest-priority remaining:
-1. Exact formulas for DEA, OTD, Sort Compliance, FPY, FSAF, Timely Staged, Route readiness — **blocked** on a domain-owner input; do not invent these (Milestone 3 depends on this only for the metrics it *can* define generically; the rest stay unimplemented).
-2. Which LLM provider(s) implement the `LLMProvider` interface for real — Milestone 5 blocker.
-3. RBAC role model for Layer 5 governance — Milestone 9 blocker (and partially Milestone 7).
-4. Project license — unresolved, cosmetic but real.
-5. (Resolved this session: which narrow RL problem — see §3/§4 above.)
+Full register: `docs/OPEN_QUESTIONS.md`. Changed this session:
+- **Resolved**: "exact event-ingestion mechanism" → single append-only `events` table + replay-based projector, implemented.
+- **New**: tests-vs-dev-database isolation gap (see §4.4/§6).
+- Still open and highest-priority for what's ahead: scenario/simulation-config file format (blocks Milestone 4), which LLM provider backs `LLMProvider` (blocks Milestone 5), metric formulas still `requires_validation` (blocks parts of Milestone 3).
 
 ## 8. Security considerations
 
-No change to the governance stance (ADR-0009) or the public-repo safety checklist (`docs/SECURITY_AND_GOVERNANCE.md`) this session. New artifacts introduced (`docker-compose.yml`, `backend/.env.example`, CI workflow) were checked for secrets before commit — none present; `.env.example` has placeholder values identical to `Settings` defaults, not real credentials, and `.gitignore` already excludes real `.env` files.
+No change to governance stance or public-repo-safety posture. New code reviewed before commit: no secrets, no real data — the synthetic generator is the only data producer and is explicitly seeded/fictional. `source_kind` (physical_observation/system_recorded/inferred/simulated) is now a real field on every event, not just a documented intention, which matters for the project's evidence-discipline principle once agents start consuming this data in Milestone 5.
 
 ## 9. Recommended next milestone
 
-**Milestone 2 — Domain model and event infrastructure** (`docs/ENGINEERING_ROADMAP.md`). Start with Cycle 1 only (truck → induct → sort → stow), not the full entity list from the operational domain model at once. Build the typed event model and its duplicate/out-of-order/delayed/missing/replay handling with real tests before writing a synthetic event generator against it — the event model is the foundation every later milestone (analytics, twin, agents, RL) reads from, so it's worth getting right rather than fast.
+**Milestone 3 — Data engineering and analytics** (`docs/ENGINEERING_ROADMAP.md`): Parquet export of the Milestone 2 event log, a layered dbt Core project (raw → cleaned → curated → operational intelligence) against DuckDB, dbt tests (nulls, uniqueness, referential integrity, valid event types, timestamp validity, metric-contract requirements), and the `proposed`-status metrics (WIPS, induct throughput, jackpot volume, dwell time, stow throughput) computed and queryable end to end. The organization-specific metrics (DEA, OTD, Sort Compliance, FPY, FSAF, Timely Staged, Route readiness) stay unimplemented — still `requires_validation`.
 
 ## 10. Exact instructions for the next session
 
-1. Read this file, then `docs/ENGINEERING_ROADMAP.md` Milestone 2, then `docs/OPERATIONAL_DOMAIN_MODEL.md` §2–3 (entities and Cycle 1 flow) and `docs/DATA_ARCHITECTURE.md` §"Event schema conventions".
-2. Confirm the Milestone 1 foundation still works before building on it: `cd backend && pip install -e ".[dev]" && pytest && ruff check .`, and/or `docker compose up -d` + `curl http://localhost:8010/health/ready` (adjust the port if `docker-compose.yml` has since been changed back to the defaults).
-3. Scope Milestone 2 to Cycle 1 entities/events only, per the roadmap's explicit non-goal boundary — resist building the full entity list in one pass.
-4. Write tests for duplicate/out-of-order/delayed/missing/replay event handling *before or alongside* the ingestion code, not after — this is explicitly called out as needing comprehensive tests, not best-effort ones.
-5. When Milestone 2 is done: update this file's status table and "last updated" date, note any new open questions or architectural findings the same way §3–§4 of this revision did, and leave the repo in a state where `pytest` and `ruff check .` both pass before ending the session.
+1. Read this file, then `docs/ENGINEERING_ROADMAP.md` Milestone 3, then `docs/DATA_ARCHITECTURE.md` (responsibilities and the now-implemented event schema) and `docs/OPERATIONAL_DOMAIN_MODEL.md` §4 (metric contract framework).
+2. Confirm Milestone 1–2 still work before building on them: `cd backend && pip install -e ".[dev]" && ruff check . && pytest -q` (expect skips, not failures, if Postgres isn't up); then `docker compose up -d postgres` (or a local Postgres on a port you set via `POSTGRES_PORT`), `alembic upgrade head`, and `python scripts/generate_synthetic_events.py --seed 42 --seed-db` to get a real event stream to build the analytics pipeline against.
+3. If you hit `alembic upgrade head` silently doing nothing against a database that's clearly missing its tables, that's the known tests-vs-dev-DB issue (§4.4/§6) — drop `alembic_version` and re-run, don't assume the migration itself is broken.
+4. dbt Core isn't installed anywhere yet (checked in the architecture phase: not present globally) — it'll need `pip install dbt-core dbt-duckdb` (or equivalent) added to `backend/pyproject.toml`'s `dev` or a new `analytics` extra; don't add it to the base runtime dependencies unless the API itself needs to invoke dbt directly.
+5. Keep metrics marked `requires_validation` unimplemented — do not approximate DEA/OTD/Sort Compliance/FPY/FSAF/Timely Staged/Route readiness formulas to "get something working." Only the `proposed` metrics from `docs/OPERATIONAL_DOMAIN_MODEL.md` §4.1 are in scope.
+6. When Milestone 3 is done: update this file's status table and date, run `ruff check .` and `pytest -q` one more time and report the actual result, and update `docs/OPEN_QUESTIONS.md` for anything resolved or newly found — the same discipline this session tried to model, not a one-time thing.

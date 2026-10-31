@@ -13,9 +13,10 @@ Status values: `unresolved` (no leaning yet), `leaning` (a tentative direction e
 
 | Question | Why it matters | Current leaning | Status |
 |---|---|---|---|
-| Exact event-ingestion mechanism (outbox table vs. append-only event table vs. something else) | Determines Milestone 2's core implementation | Lean toward an append-only event table with a separate projection step, as the simplest thing that satisfies the idempotency/ordering requirements — not committed | `leaning` |
+| Exact event-ingestion mechanism (outbox table vs. append-only event table vs. something else) | Determined Milestone 2's core implementation | **Resolved 2026-10-31**: a single append-only `events` table (`backend/app/events/models.py`) with a replay-based projector (`backend/app/services/event_ingestion.py`) rebuilding current state from each entity's full event history on every write. See `docs/DATA_ARCHITECTURE.md` §"Event schema conventions". | `resolved` |
 | Scenario/simulation-config file format (YAML vs. JSON vs. Python dataclass) | Blocks Milestone 4 implementation start | Lean YAML for human-editability; no ADR written yet because the stakes are low and reversible | `leaning` |
 | When (if ever) does real streaming infrastructure (Kafka or similar) get introduced? | ADR-0004 defers it until justified by actual throughput/fan-out needs | Revisit when more than one consumer needs the same event stream independently, or induct-time latency requirements get strict | `unresolved` |
+| Tests and local dev currently share one Postgres database/volume | Found in Milestone 2: pytest's schema fixture does `Base.metadata.create_all`/`drop_all` directly, independent of Alembic's own `alembic_version` bookkeeping table — running tests against the same database used for manual dev work (e.g. via `scripts/generate_synthetic_events.py --seed-db`) leaves Alembic's version table pointing at a revision whose tables pytest just dropped, so `alembic upgrade head` silently no-ops until `alembic_version` is manually cleared. Not a correctness bug in application code, but a real local-dev footgun. | Lean toward a separate `stationos_test` database (a second env-driven setting) once this starts actually costing someone time — low urgency while it's one developer on one machine who now knows about it | `unresolved` |
 
 ## Agentic AI
 
