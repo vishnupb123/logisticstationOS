@@ -41,3 +41,12 @@ def mark_failed(
 
 def get_by_id(session: Session, execution_id: uuid.UUID) -> AgentExecution | None:
     return session.get(AgentExecution, execution_id)
+
+
+def list_executions(
+    session: Session, *, agent_name: str | None = None
+) -> list[AgentExecution]:
+    query = session.query(AgentExecution)
+    if agent_name is not None:
+        query = query.filter(AgentExecution.agent_name == agent_name)
+    return query.order_by(AgentExecution.created_at.desc()).all()

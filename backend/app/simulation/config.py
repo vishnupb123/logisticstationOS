@@ -65,3 +65,44 @@ class ScenarioConfig(BaseModel):
 def load_scenario(path: str | Path) -> ScenarioConfig:
     data = yaml.safe_load(Path(path).read_text())
     return ScenarioConfig.model_validate(data)
+
+
+# backend/app/simulation/config.py -> repo root is three levels up.
+SHIPPED_SCENARIOS_DIR = Path(__file__).resolve().parents[3] / "simulation" / "scenarios"
+
+
+class ShippedScenario(BaseModel):
+    """One entry in the shipped-scenario allow-list (Milestone 10's
+    API layer) — `filename` is the only thing an HTTP caller may use
+    to select a scenario; it is never a free-form filesystem path, see
+    `resolve_shipped_scenario_path`.
+    """
+
+    filename: str
+    name: str
+    description: str
+
+
+def list_shipped_scenarios() -> list[ShippedScenario]:
+    scenarios = []
+    for path in sorted(SHIPPED_SCENARIOS_DIR.glob("*.yaml")):
+        config = load_scenario(path)
+        scenarios.append(
+            ShippedScenario(filename=path.name, name=config.name, description=config.description)
+        )
+    return scenarios
+
+
+def resolve_shipped_scenario_path(filename: str) -> Path:
+    """Resolves a scenario *filename* (never a path) against the
+    shipped-scenarios directory only — the API layer's one entry point
+    for "run this scenario" must never accept an arbitrary filesystem
+    path from an HTTP caller (unlike the CLI scripts, which are trusted
+    local invocations). `Path.name` strips any directory component a
+    caller tried to sneak in before the lookup, so this can only ever
+    resolve to a file actually inside `SHIPPED_SCENARIOS_DIR`.
+    """
+    candidate = SHIPPED_SCENARIOS_DIR / Path(filename).name
+    if not candidate.is_file():
+        raise FileNotFoundError(f"no shipped scenario named {filename!r}")
+    return candidate
