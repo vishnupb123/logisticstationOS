@@ -26,7 +26,7 @@ An LLM is never a substitute for a properly defined optimisation algorithm, and 
 Policy engine, constraint validation, risk evaluation, human approval, role-based permissions, audit records, decision provenance. Lives in `backend/app/security/` — the governance pipeline (policy engine, risk evaluation, approval, audit record, Milestone 7) and role-based permissions on who may approve (`rbac.py`, Milestone 9) are both implemented. Detailed in `docs/SECURITY_AND_GOVERNANCE.md`.
 
 ### Layer 6 — Operational experience
-Station command centre, dashboards, AI copilot, investigation workspace, simulation workspace, planning workspace, decision history, model/policy evaluation views. Lives in `frontend/` (not started). **Milestone 10 is explicitly split into two parts** (project owner's sequencing decision from the scoping conversation): Part 1, the API layer this frontend will consume, is implemented — see `docs/API_REFERENCE.md`. Part 2, the React/TypeScript frontend itself, has not been started.
+Station command centre, dashboards, AI copilot, investigation workspace, simulation workspace, planning workspace, decision history, model/policy evaluation views. Lives in `frontend/` — implemented (Milestone 10, both parts): a Vite + React + TypeScript SPA with seven views covering every Cycle-1/agent/simulation/RL/decision capability that has real data behind it (Cycle 2 views don't exist — no domain model, no events — so there's nothing for a view to show). See `frontend/README.md` for the dev setup and `docs/API_REFERENCE.md` for the API layer it consumes.
 
 ## Module dependency direction
 

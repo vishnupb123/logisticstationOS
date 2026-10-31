@@ -4,20 +4,24 @@ Instructions for AI coding assistants (Claude Code and others) working in this r
 
 ## What this project is
 
-StationOS is a local-first logistics operations intelligence platform. Milestones 1–9 are complete. Milestone 10 (operational command centre) is explicitly split into two parts: **Part 1, the backend API layer, is complete** (`docs/API_REFERENCE.md`); **Part 2, the React/TypeScript frontend, has not been started** — see `HANDOFF.md` before starting it. Full context: `docs/PRODUCT_VISION.md`, `docs/OPERATIONAL_DOMAIN_MODEL.md`, `docs/SYSTEM_ARCHITECTURE.md`, `docs/ENGINEERING_ROADMAP.md`, and `docs/adr/`.
+StationOS is a local-first logistics operations intelligence platform. Milestones 1–10 are complete — including the frontend (`frontend/`, a Vite + React + TypeScript SPA, Milestone 10 Part 2). The full ten-milestone roadmap is done; see `HANDOFF.md` for what a genuinely new session of work would mean next (there is no "next milestone" queued — don't assume one). Full context: `docs/PRODUCT_VISION.md`, `docs/OPERATIONAL_DOMAIN_MODEL.md`, `docs/SYSTEM_ARCHITECTURE.md`, `docs/ENGINEERING_ROADMAP.md`, and `docs/adr/`.
 
 ## Hard rules
 
 1. **Never introduce real operational data.** All parcel IDs, employee names, customer data, screenshots, or proprietary schemas are forbidden — synthetic data only. See `docs/SECURITY_AND_GOVERNANCE.md` §"Public repository safety". If asked to add real data, decline and explain why.
 2. **Never invent proprietary metric formulas.** Metrics like DEA, OTD, FPY, FSAF are defined in `docs/OPERATIONAL_DOMAIN_MODEL.md` with status `requires_validation` where the exact calculation is unknown. Do not fill in a numerator/denominator you weren't given — propose it as a draft explicitly marked `proposed`, not `validated`.
 3. **No autonomous control of physical operations, workforce, or dispatch.** StationOS is a decision-support system (see ADR-0009). Anything that would take an operationally consequential action must route through a human-approval gate, not execute directly.
-4. **Don't jump ahead of the roadmap.** `docs/ENGINEERING_ROADMAP.md` defines ten sequenced milestones (foundation → domain/events → analytics → digital twin → agents → RL → agent/RL coordination → predictive intelligence → governance → frontend). If asked to build something from a later milestone, flag the dependency rather than silently scaffolding it out of order. Don't attempt more than one milestone per session.
+4. **Don't jump ahead of the roadmap.** `docs/ENGINEERING_ROADMAP.md` defines ten sequenced milestones (foundation → domain/events → analytics → digital twin → agents → RL → agent/RL coordination → predictive intelligence → governance → frontend) — **all ten are now complete** (2026-10-31, including both parts of Milestone 10). This rule's substance still applies to whatever comes next: if asked to build a genuinely new capability, don't silently assume a scope or sequencing — check `HANDOFF.md` and ask if it's unclear, and don't attempt more than one coherent unit of work per session.
 5. **No premature infrastructure.** No Kafka until an actual streaming requirement justifies it (ADR-0004). No microservices split (ADR stack assumes a modular monolith) unless a new ADR revisits that. No mandatory cloud service (Snowflake, managed Postgres, etc.) for foundational workflows — see ADR-0001 and ADR-0010.
 6. **LLM-provider independence.** Application code must go through the provider abstraction described in ADR-0008, not call a specific vendor SDK directly from agent/business logic.
 
 ## Conventions
 
 - **Backend**: Python 3.11+, FastAPI, Pydantic v2, SQLAlchemy 2.0, Alembic, structlog. Linting via `ruff` (config in `backend/pyproject.toml`). Tests via `pytest` under `backend/tests/`.
+- **Frontend**: Vite + React 19 + TypeScript (`frontend/`), no SSR, no Node server of its own — a static SPA talking to the backend API over HTTP. React Router for views, TanStack Query for server state (don't hand-roll fetch-in-`useEffect` — the query client is already configured in `main.tsx`). Linting via `oxlint`. Needs Node 18+; this box's default `node` may be older than that (check before assuming `npm run dev` works) — the repo was built/verified against Node 20 via `nvm`. TypeScript types in `src/api/types.ts` mirror `backend/app/schemas/*.py` by hand (no codegen); keep them in sync when either side's shape changes.
+- **Design tokens** (`frontend/src/index.css`) come from the `dataviz` skill's validated reference palette — load that skill before adding a new chart or any new use of a categorical/sequential/status color, don't invent a new color ad hoc.
+- **An inline SVG chart's axis labels are plain HTML below the SVG, never SVG `<text>`.** `frontend/src/components/charts/` uses `preserveAspectRatio="none"` (independent X/Y scaling, so a wide card gets a correctly-proportioned chart) — `<text>` inside that same coordinate space renders visibly distorted, found by actually looking at a rendered screenshot, not by reading the code. An `<svg>` with a `viewBox` also needs an explicit CSS `height` (e.g. `style={{ height }}`) — without one, the browser falls back to the viewBox's own aspect ratio to compute height from `width: 100%`, which renders many times too tall. See `frontend/README.md`.
+- **For UI/frontend changes, actually run the app in a browser before reporting done** — this sandbox has no `chromium-cli`; Playwright (a `frontend` devDependency) with a downloaded Chromium works as the fallback (see the `run` skill's `examples/playwright.md`). Four real bugs in Milestone 10 Part 2 were caught exactly this way (the two above, plus a stale-query-cache bug and a misleading default scenario selection) — none of them were visible from reading the code.
 - **Modular monolith**: one deployable backend, strict internal module boundaries (`domain`, `events`, `repositories`, `services`, `api`, `schemas`, `orchestration`, `agents`, `rl`, `simulation`, `analytics`, `security`, `predictive`) per `docs/SYSTEM_ARCHITECTURE.md`. A module only imports from layers below it in that architecture doc, never sideways into another vertical's internals. `app/api/routes/*.py` stays a thin wrapper — it calls into the module that owns the real logic (`app/analytics`, `app/orchestration`, `app/simulation`, `app/rl`, `app/security`) and does no business logic of its own; `app/schemas/` holds the HTTP-facing request/response models for that boundary, separate from the internal domain Pydantic models each module defines for itself.
 - **Config**: all configuration via environment variables / `.env` through `app/core/config.py::Settings`. Never hardcode credentials or connection strings elsewhere.
 - **Events**: every domain event needs `event_id`, `idempotency_key`, `correlation_id`, `schema_version`, `occurred_at`, `provenance`, and `source_kind`, per `docs/DATA_ARCHITECTURE.md`. There is one append-only `events` table (`app/events/models.py`), not one table per event type — don't add a second events table for a new event type, add a payload schema to `app/events/schemas.py::EVENT_PAYLOAD_SCHEMAS` instead.
@@ -102,6 +106,16 @@ python scripts/train_jackpot_risk_model.py --scenario ../simulation/scenarios/rl
 
 # or, from the repo root, the full stack:
 docker compose up -d
+```
+
+```bash
+# frontend (needs Node 18+; this box's default node may be older — check first)
+cd frontend
+npm install
+cp .env.example .env.local   # adjust VITE_API_BASE_URL (8000 direct, 8010 via Docker Compose)
+npm run dev                  # http://localhost:5173 — needs the backend API running too
+npm run build                # tsc -b && vite build
+npm run lint                 # oxlint
 ```
 
 CI (`.github/workflows/ci.yml`) runs lint, `alembic upgrade head`, seed + export + `dbt run`/`dbt test`, then `pytest` — in that order (pytest last, because its own schema teardown would otherwise wipe the seeded data the dbt steps need) — against a real Postgres service container on every push/PR to `main`. Run the same sequence locally before pushing, don't rely on CI to catch it first. After any code change, actually run the tests and report what happened; don't report a change as done on the basis that it "should work."

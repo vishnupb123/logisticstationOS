@@ -10,11 +10,11 @@ StationOS models a **fictional** delivery station ("Station NOVA-1") using **syn
 
 This project is not affiliated with, endorsed by, or built on confidential data from any employer or company. It does not integrate with any real operator's systems. Operational terminology (induct, sortation, stow, dispatch, etc.) reflects generic parcel-logistics industry concepts, not a verified replica of any specific organization's proprietary process. See [`docs/SECURITY_AND_GOVERNANCE.md`](docs/SECURITY_AND_GOVERNANCE.md) §"Public repository safety" before contributing real-world data of any kind — don't.
 
-## Current status: Milestones 1–9 complete, Milestone 10 Part 1 (API layer) complete
+## Current status: all ten roadmap milestones complete
 
-Foundation + Cycle-1 domain/events + analytics + digital twin + first agent + RL environment + agent/RL decision governance + predictive intelligence + governance/reliability + the backend API layer a frontend will consume.
+Foundation + Cycle-1 domain/events + analytics + digital twin + first agent + RL environment + agent/RL decision governance + predictive intelligence + governance/reliability + a backend API layer + a React/TypeScript frontend command centre consuming it.
 
-**The React/TypeScript frontend itself (Milestone 10 Part 2) and the rest of the agent roster are not implemented yet** — see [`docs/ENGINEERING_ROADMAP.md`](docs/ENGINEERING_ROADMAP.md) and [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md) for what's next, and `HANDOFF.md` before starting it.
+**The rest of the agent roster (beyond the one Flow Intelligence Agent) and the Cycle-2 operational domain (Pick & Stage, dispatch, routes, waves, returns) are not implemented** — those were never on the ten-milestone roadmap as scoped; see [`docs/ENGINEERING_ROADMAP.md`](docs/ENGINEERING_ROADMAP.md) and `HANDOFF.md` for what a genuinely new phase of work would involve.
 
 What runs today:
 - A FastAPI backend (`backend/`) with structured logging, settings, liveness/readiness checks, and connectivity probes for PostgreSQL and DuckDB.
@@ -28,7 +28,8 @@ What runs today:
 - **Agent/RL decision governance** (`backend/app/security/`): a policy engine, a (minimal, honestly-labeled) risk-evaluation stub, RBAC-checked human approval (`operator`/`supervisor`/`admin` — `rbac.py`), shadow-mode proposals that can never be approved, and a permanent audit record (`DecisionRecord`, now including who-approved-with-what-role and exact component versions) connecting agent evidence and RL-environment-based candidate evaluation — never the trained PPO policy, deliberately, given its honest result above. The "no path lets a recommendation become acted on without approval" requirement is a structural guard in the repository functions, not a convention. See `docs/SECURITY_AND_GOVERNANCE.md` and ADR-0009.
 - **Minimal local-first tracing** (`backend/app/core/tracing.py`): OpenTelemetry, console-exporter only, no external collector — correlates the multi-step operations inside an agent run or a decision proposal.
 - **Predictive intelligence** (`backend/app/predictive/`): a jackpot-accumulation-risk classifier (logistic regression, two baselines) trained on digital-twin episodes, with temporal (seed-ordered, never-shuffled) train/test validation. A genuinely positive result — 0.857 ROC-AUC on held-out episodes, clearly beating both baselines — but only after catching and removing a feature pair that was really just a clock in disguise (measured correlation -1.0 in the fixed-arrival-schedule scenario, inflating accuracy to a misleading 0.96). Full writeup in `docs/PREDICTIVE_INTELLIGENCE_SPEC.md`.
-- **A real HTTP API** (`backend/app/api/routes/`): read endpoints for analytics/agent-execution-history/simulation/RL comparison, plus RBAC-gated write actions (propose/approve/reject/observe-outcome) on the decision-governance pipeline — everything the frontend (not yet built) will need. No endpoint accepts an arbitrary filesystem or DuckDB path from a caller; CORS is a narrow local-dev allow-list, not a wildcard. See `docs/API_REFERENCE.md`.
+- **A real HTTP API** (`backend/app/api/routes/`): read endpoints for analytics/agent-execution-history/simulation/RL comparison, plus RBAC-gated write actions (propose/approve/reject/observe-outcome) on the decision-governance pipeline. No endpoint accepts an arbitrary filesystem or DuckDB path from a caller; CORS is a narrow local-dev allow-list, not a wildcard. See `docs/API_REFERENCE.md`.
+- **A frontend command centre** (`frontend/`): a Vite + React + TypeScript SPA with seven views (station overview, induct/sortation, stow/jackpot, AI investigations, digital-twin runner, RL comparison, decisions/audit — with a clearly-labeled dev-mode role picker for RBAC actions, not real authentication), every one stating whether what it shows is synthetic or simulated, never "live" — StationOS has no live operational system to be live against. See `frontend/README.md`.
 - A 190-test pytest suite (pure logic + real-Postgres integration tests, the latter skipping honestly rather than failing when Postgres isn't reachable), and a GitHub Actions CI workflow (lint, migrate, seed + export + `dbt run`/`dbt test`, then pytest — against a real Postgres service container) on every push/PR to `main`.
 
 ## Repository layout
@@ -58,7 +59,12 @@ backend/        FastAPI application (modular monolith) — see docs/SYSTEM_ARCHI
   analytics/    dbt Core project — raw/cleaned/curated/operational_intelligence models, 30 tests
 data/           raw / processed / synthetic / analytics data (gitignored contents)
 docs/           architecture, domain model, specs, ADRs — start here
-frontend/       React/TypeScript command-centre UI (not started)
+frontend/       Vite + React + TypeScript command centre (Milestone 10 Part 2) — see frontend/README.md
+  src/
+    api/        typed fetch client + per-resource endpoint modules, TS mirrors of backend/app/schemas/*.py
+    components/ shared UI — Layout, DataSourceBadge, EvidenceBadge, RolePicker, charts/ (inline SVG)
+    views/      one component per route — StationOverview, InductSortation, StowJackpot,
+                AiInvestigations(+Detail), DigitalTwinRunner, RlComparison, DecisionHistory(+Detail)
 infra/          Docker / Docker Compose / CI definitions (not started)
 ml/             trained RL policies (gitignored — regenerate via backend/scripts/train_rl_policy.py)
 simulation/     digital-twin scenario YAML files — normal_operations.yaml, delayed_inbound_trucks.yaml
@@ -209,6 +215,18 @@ python scripts/train_jackpot_risk_model.py \
 ```
 
 Prints accuracy/precision/recall/ROC-AUC for the base-rate baseline, a one-line heuristic, and the trained logistic regression — on held-out episodes of the training scenario and on two scenario variations never trained on. See `docs/PREDICTIVE_INTELLIGENCE_SPEC.md` for the full results and the clock-proxy feature bug caught before shipping.
+
+### Running the frontend
+
+Needs Node 18+ and the backend API running (see above). From `frontend/`:
+
+```bash
+npm install
+cp .env.example .env.local   # adjust VITE_API_BASE_URL if needed (8000 direct, 8010 via Docker Compose)
+npm run dev                  # http://localhost:5173
+```
+
+Seven views — station overview, induct/sortation, stow/jackpot, AI investigations, digital-twin scenario runner, RL policy comparison, decisions/audit (with a dev-mode role picker, clearly labeled as not real authentication). See `frontend/README.md` and `docs/API_REFERENCE.md`.
 
 ## License
 

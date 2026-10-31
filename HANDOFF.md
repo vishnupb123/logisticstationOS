@@ -2,7 +2,7 @@
 
 **Purpose of this file**: the persistent, single source of truth for "where StationOS actually stands," written so a new engineering session (human or AI) can continue without this conversation's history. If something here conflicts with a doc in `docs/`, the more detailed doc wins for *content*; this file wins for *current status and what to do next*.
 
-Last updated: 2026-10-31 (Milestone 10, Part 1 — the API layer — completed this session).
+Last updated: 2026-10-31 (Milestone 10, Part 2 — the React frontend — completed this session. **All ten roadmap milestones are now complete.**)
 
 ---
 
@@ -19,67 +19,63 @@ Last updated: 2026-10-31 (Milestone 10, Part 1 — the API layer — completed t
 | 7 — Agent and RL coordination | ✅ Complete |
 | 8 — Predictive intelligence | ✅ Complete |
 | 9 — Governance and reliability | ✅ Complete |
-| 10 — Operational command centre | 🟡 **Part 1 (API layer) complete this session.** Part 2 (React/TypeScript frontend) **not started.** |
+| 10 — Operational command centre (Part 1: API, Part 2: frontend) | ✅ **Complete, both parts** |
 
-Full milestone definitions: `docs/ENGINEERING_ROADMAP.md`.
+**There is no "next milestone" queued.** `docs/ENGINEERING_ROADMAP.md`'s original ten-milestone sequence is fully delivered. §9 below discusses what a genuinely new phase of work could mean — don't assume one without asking.
 
-## 2. The scoping conversation, and what it decided
+## 2. What was built this session (Milestone 10, Part 2 — the frontend)
 
-Before any frontend code was written, the project owner had an explicit scoping conversation (prompted by three prior sessions' deferrals). Four decisions came out of it:
+**`frontend/`** — a Vite + React 19 + TypeScript SPA (no SSR, no Node server of its own), per the scoping conversation's decision: React Router for the seven views, TanStack Query for server state, inline SVG charts (no charting library dependency). Design tokens (`src/index.css`) come from the `dataviz` skill's validated reference palette.
 
-1. **Build the complete backend API first, then the frontend, in a separate session.** This is why this session built Part 1 only — no React/TypeScript code exists yet.
-2. **The decision-governance pipeline's actions (approve/reject) should be reachable from the eventual UI**, via an explicit "dev-mode role picker" (no real login system) rather than staying read-only.
-3. **Build a more complete REST API now**, not just the minimal slice the first frontend cut needs — anticipating that a real role-picker UI and other future consumers will want it.
-4. **Lightweight Vite + React + TypeScript SPA** (no SSR) for the eventual frontend, once Part 2 starts — noted here for when that session begins, not acted on yet.
+**Seven views**, each with a `DataSourceBadge` ("Synthetic data" / "Simulated run," never "live" — Milestone 10's exit criterion, satisfied literally):
+- Station Overview, Induct & Sortation, Stow & Jackpot — read `/analytics/*`.
+- AI Investigations (+ detail) — lists/runs the Flow Intelligence Agent, evidence categories shown with fixed-color badges, never flattened to prose.
+- Digital Twin Scenario Runner — runs a shipped scenario, shows a real summary.
+- RL Policy Comparison — evaluates the two baseline policies (never PPO) against a scenario, as small-multiple bar charts (never one dual-axis chart for metrics of different scale/unit).
+- Decisions & Audit History (+ detail) — the full governance pipeline: propose, RBAC-checked approve/reject via the agreed **dev-mode role picker** (prominently labeled in the UI itself — not just in docs — as not real authentication), observe outcome, shadow mode (visibly distinct status, no approval form rendered for it at all).
 
-Views with Cycle 2 data requirements (high-value processing, Pick & Stage, dispatch waves, returns) were **not** built — Cycle 2 doesn't exist (no domain model, no events), so there's nothing for an endpoint to read. This wasn't a separate scoping decision to re-litigate; it falls out of what data actually exists.
+**Four real bugs found and fixed by actually running the app in a browser** — this sandbox has no `chromium-cli`; Playwright with a downloaded Chromium was used instead (see `frontend/README.md`'s "Testing in a browser" section for the exact approach). None of these were visible from reading the code:
+1. An SVG chart with a `viewBox` but no explicit CSS `height` rendered ~9x too tall (the browser fell back to the viewBox's own intrinsic aspect ratio to compute height from `width: 100%`).
+2. SVG `<text>` inside a `preserveAspectRatio="none"`-stretched coordinate space rendered as distorted, illegible glyphs — axis labels were moved to plain HTML below the SVG.
+3. Clicking into a just-run agent execution's detail page showed "no findings," even though real deterministic findings were computed — because (per Part 1's own documented finding) `AgentExecutor`'s LLM-fallback path never persists its output to the audit row, and the detail page's `GET` honestly reflected that. Fixed by seeding the React Query cache with the `/run` mutation's actual response, so the real result shows immediately after running, while a later page reload still honestly shows what's actually persisted.
+4. The RL Policy Comparison view defaulted to the alphabetically-first scenario (`delayed_inbound_trucks`) rather than the `rl_`-tuned family — silently comparing policies on a scenario Milestone 6 already documented as never producing a meaningful difference between them.
 
-## 3. What was built this session (Milestone 10, Part 1)
+**No permanent frontend test suite was built.** The Playwright verification was scratch (a handful of one-off driver scripts), removed after use — not committed. `frontend/README.md` flags this and suggests `/run-skill-generator` if browser-based verification becomes a recurring need, per the `run` skill's own recommendation.
 
-**`backend/app/schemas/`** (new package — populated for the first time; `docs/SYSTEM_ARCHITECTURE.md` had long said this would happen "once API-facing schemas are needed"): `decisions.py`, `simulation.py`, `rl.py`, `agents.py` — HTTP-facing request/response models, kept distinct from each module's own internal domain Pydantic models.
+## 3. The scoping conversation's decisions, and how they played out
 
-**`backend/app/api/routes/`** gained five routers:
-- `analytics.py` — the five Milestone 3 metrics, read-only, 503 if the dbt pipeline hasn't been run.
-- `agents.py` — list/get/run Flow Intelligence Agent executions. `POST .../run` uses the real `OllamaProvider` (never `FakeLLMProvider` — that stays test-only); if Ollama isn't reachable, the existing, already-tested fallback path handles it.
-- `simulation.py` — list shipped scenarios, run one synchronously and get a summary (never the raw event list, never a disk write).
-- `rl.py` — evaluate the two baseline policies (never the trained PPO policy) against a scenario.
-- `decisions.py` — list/get/propose/approve/reject/observe-outcome. The same RBAC checks and state-machine guards as the Python API — no separate code path.
+Recap from the prior session (`docs/ENGINEERING_ROADMAP.md` Milestone 10's write-up has the full detail): (1) API first, frontend second, in separate sessions — done, this session was the second one; (2) RBAC-gated actions reachable from the UI via a dev-mode role picker — built, see `src/components/RolePicker.tsx`; (3) a more-complete-than-minimal REST API — Part 1 already did this; (4) lightweight Vite + React + TypeScript SPA — done, no SSR framework, no heavier alternative considered once that was settled.
 
-**Two HTTP-specific security boundaries**, deliberate and tested, not incidental: no endpoint accepts a free-form filesystem path (`app/simulation/config.py::resolve_shipped_scenario_path` resolves a filename against a shipped-scenario allow-list, stripping any directory-traversal attempt) or a free-form DuckDB path (always the server-configured one). CORS is a narrow local-dev allow-list, not a wildcard.
+## 4. Known limitations
 
-**36 new tests** (154 → 190 total): `tests/api/` (29, across all five routers, including dedicated path-traversal-rejection tests), plus direct unit tests for `app/simulation/config.py`'s new helpers and `app/orchestration/repository.py::list_executions` (also new, needed for the agents API).
+- **RBAC's limitation (Milestone 9) is unchanged and now surfaced in two places**: the API (`docs/API_REFERENCE.md`) and the UI itself (the role picker's own on-screen warning). Still no real login/session system — a role is claimed, not verified.
+- **Cycle 2 has no UI, because it has no data.** High-value processing, Pick & Stage, dispatch waves, and returns were never built at any layer (domain model, events, analytics, or now frontend) — this isn't a frontend gap, it's upstream of the frontend entirely.
+- **No frontend test suite.** Regressions in the four bug categories found this session (or new ones) won't be caught automatically — see §2's last paragraph and `docs/OPEN_QUESTIONS.md`.
+- **The decision-proposal form in the UI targets one specific scenario family** (`rl_stow_balancing.yaml`, three preset candidates matching `scripts/run_decision_demo.py`) — not a generic per-scenario candidate builder, since the API doesn't expose a scenario's aisle layout for the UI to build weights against generically. Documented in `frontend/src/views/DecisionHistory.tsx`'s own comment.
+- The tests-vs-dev-database footgun (backend) is unchanged — not hit this session (frontend work needed the backend up but didn't run the backend's own pytest suite in the same session as manual testing).
 
-**Verified live, not just via `TestClient`**: ran the real server with `uvicorn`, and over real HTTP: listed scenarios, proposed a decision (real simulation-based candidate evaluation), had an `operator` get refused (403), had a `supervisor` approve it, ran the observed-outcome simulation, ran an RL evaluation, and listed agent executions. Full reference: `docs/API_REFERENCE.md`.
+## 5. Open questions
 
-## 4. A real nuance found while building this
+Full register: `docs/OPEN_QUESTIONS.md`. New this session: should a permanent frontend test suite be built (leaning: yes, once the view set stabilizes); should `/rl/evaluate` ever expose a better-performing policy than the baselines (leaning: not yet, same reasoning as before). Reaffirmed: the `AgentExecutor` fallback-output-not-persisted gap now has two independent workarounds (API + frontend) rather than a root-cause fix — a real, if currently tolerable, smell worth revisiting if it recurs a third time.
 
-`AgentExecutor`'s LLM-fallback path (Milestone 5) marks an execution `FAILED` and records `error`, but never writes the fallback output into the persisted row's `output` column — only a successful run does that (`mark_completed`). `POST /agents/flow-intelligence/run` compensates by always returning the actual in-memory result, not relying solely on what got persisted — otherwise a caller hitting the fallback path would see `output: null` despite a real, non-fabricated result having been computed. **Not changed in `app/orchestration/` itself** — that would be revisiting Milestone 5's established, tested behavior, out of scope for an API-layer session. Tracked in `docs/OPEN_QUESTIONS.md` as a real but deliberately-deferred question.
+## 6. Security considerations
 
-## 5. Known limitations
+The frontend adds no new backend trust boundary — it calls the exact same RBAC-checked, path-traversal-safe API Part 1 already built, with no parallel or weaker path. The dev-mode role picker is visibly, prominently labeled as not real authentication, in the UI a reviewer would actually see, not only in a doc they might not read. No real secrets, credentials, or data introduced. `.env.local` (the only place `VITE_API_BASE_URL` is actually set per-developer) is gitignored via Vite's own `*.local` pattern; only `.env.example` (placeholder values) is committed.
 
-- **Part 2 (the actual frontend) doesn't exist.** This session built the API it will consume, nothing more. Don't assume any UI exists when reasoning about "what Milestone 10 delivers."
-- **RBAC's limitation from Milestone 9 applies identically over HTTP**: `approver_role` is a claimed role, not a verified identity — the API doesn't add (or pretend to add) authentication.
-- **Only two RL policies are exposed via `/rl/evaluate`** (the baselines) — not the trained PPO policy, deliberately, for the same reason Milestones 6/7 never wired it into anything beyond its own evaluation report.
-- **`/simulation/run` and `/rl/evaluate` are synchronous** — a large seed list or an expensive scenario blocks that request for its full duration (FastAPI runs sync `def` routes in a thread pool, so this doesn't block other requests, but the caller still waits). Request schemas cap seed-list length (`max_length=20`) as a basic guard; no async job queue was built, since that would be real new infrastructure for a need that hasn't shown up yet.
-- The tests-vs-dev-database footgun from prior milestones is unchanged (hit and recovered the documented way twice during this session's manual testing).
+## 7. What a genuinely new phase of work could mean
 
-## 6. Open questions
+The ten-milestone roadmap as originally scoped is done. Real, legitimate next steps exist, but none is "the next milestone" — picking one is a decision for whoever is directing the next session, not something to assume:
 
-Full register: `docs/OPEN_QUESTIONS.md`. New this session: exact Part 2 frontend scope (which views ship first, is the dev-mode role picker in the first cut); whether `/agents/flow-intelligence/run` should ever support a `FakeLLMProvider` dev-mode flag (leaning: no); whether `AgentExecutor`'s fallback path should start persisting its output (unresolved, deliberately not decided this session). Unchanged: RBAC's claimed-role limitation; real risk/blast-radius model beyond the Milestone 7 stub; should the jackpot-risk prediction or the trained RL policy ever become agent/decision evidence (both still leaning: not yet).
+- **A permanent frontend test suite**, once the view set has had a chance to prove stable (§5).
+- **A second predictive candidate area** (Milestone 8's non-goal: five of six candidate areas were never attempted, two of which — route readiness, dispatch delay risk — still can't be, since they need Cycle 2 data).
+- **Domain-randomized RL training** (Milestone 6's own open question — PPO's advantage vanished on a held-out scenario; training across varied seeds/parameters was never tried).
+- **The rest of the agent roster** (`docs/AGENTIC_ARCHITECTURE.md` names Station Orchestrator, Planning, Investigation, Dispatch Intelligence, Reconciliation and Returns — only Flow Intelligence exists).
+- **Cycle 2 itself** (Pick & Stage, dispatch, routes, waves, vans, returns) — the actual prerequisite for the Cycle-2-dependent predictive areas and frontend views that were skipped throughout, not a small addition.
+- **A real risk/blast-radius model** beyond the Milestone 7 stub, and **real identity/auth** behind RBAC's claimed role — both explicitly flagged as stubs/gaps since Milestone 9, never silently left implicit.
 
-## 7. Security considerations
+## 8. Exact instructions for the next session
 
-Two new, deliberate boundaries specific to being HTTP-reachable (§3) — path-traversal protection and no-arbitrary-DuckDB-path — are documented in `docs/SECURITY_AND_GOVERNANCE.md`'s threat model table, not just implied by the code. CORS stays a narrow local-dev allow-list. The decision-governance pipeline's RBAC and audit guarantees are unchanged by being reachable over HTTP — the API calls the exact same `app/security/repository.py` functions, no parallel or weaker path was added. No new secrets, credentials, or real data introduced.
-
-## 8. Recommended next steps
-
-**Milestone 10, Part 2 — the React/TypeScript frontend.** Per the scoping conversation: a lightweight Vite + React + TypeScript SPA (no SSR), talking to the API built this session, including the explicit "dev-mode role picker" for RBAC-gated decision actions (clearly labeled as not real authentication). `docs/API_REFERENCE.md` is the menu of what's available to build views against. Views to build: station overview, induct/sortation, stow/jackpot (via `/analytics`), AI investigations (`/agents/flow-intelligence`), digital-twin scenario runner (`/simulation`), RL policy comparison (`/rl`), decision/audit history with approve/reject actions (`/decisions`). Cycle 2 views stay out of scope — there's still no data for them.
-
-## 9. Exact instructions for the next session
-
-1. Read this file, then `docs/API_REFERENCE.md` in full, then `docs/ENGINEERING_ROADMAP.md` Milestone 10's Part 1 write-up (so the actual delivered API shape is understood before designing against it, not assumed).
-2. Confirm Milestones 1–9 and Part 1 still work: `cd backend && pip install -e ".[dev,analytics,rl,predictive]" && ruff check .`; bring up Postgres, `alembic upgrade head` (four migrations), `pytest -q` (190 tests). Also smoke-test the real server once: `uvicorn app.main:app --reload`, hit `/docs`, try a couple endpoints for real — don't assume the API still works just because the tests pass.
-3. Scope Part 2 concretely before writing frontend code: which views ship first (all seven API-backed ones, or a smaller first cut), and whether the dev-mode role picker is in that first cut or a fast-follow.
-4. Set up the frontend project (`frontend/`, currently a placeholder directory) — Vite + React + TypeScript, pointed at the API's CORS-allowed origin (`http://localhost:5173` is the default `Settings.cors_allowed_origins` entry; keep them in sync if the dev port changes).
-5. Every view must state the source/status of what it shows (Milestone 10's exit criterion) — `source_kind: "simulated"` is already in the `/simulation/run` and `/rl/evaluate` response shapes for exactly this reason; carry that labeling into the UI, don't drop it.
-6. When Part 2 is done (or substantially progressed): update this file's status table and date, update `docs/ENGINEERING_ROADMAP.md`'s Milestone 10 entry to reflect both parts complete, and update `docs/OPEN_QUESTIONS.md` for anything resolved or newly found.
+1. Read this file in full, then ask what's actually wanted — there's no default "next milestone" to fall back on anymore. §7 lists legitimate candidates, not a queue.
+2. Confirm everything still works before changing anything: backend — `cd backend && pip install -e ".[dev,analytics,rl,predictive]" && ruff check .`; bring up Postgres, `alembic upgrade head` (four migrations), `pytest -q` (190 tests). Frontend — `cd frontend && npm install && npm run build && npm run lint`. Then actually run both together (`uvicorn` + `npm run dev`) and click through at least one view for real — don't assume either side still works just because its own checks pass in isolation.
+3. If frontend changes are in scope: read `frontend/README.md`'s two documented SVG gotchas before touching `src/components/charts/` — they're easy to reintroduce.
+4. Whatever gets built next, follow the same discipline every milestone here did: verify for real (not "should work"), catch and honestly document real bugs rather than quietly working around them, update every relevant doc (not just this file), commit in small logical groups, and don't silently expand scope beyond what was actually asked for.
