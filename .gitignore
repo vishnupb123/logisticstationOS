@@ -39,6 +39,10 @@ backend/analytics/logs/
 backend/analytics/dbt_packages/
 backend/analytics/.user.yml
 
+# RL training artifacts (ml/) — regenerable via backend/scripts/train_rl_policy.py
+ml/*
+!ml/.gitkeep
+
 # OS / editor
 .DS_Store
 .vscode/
