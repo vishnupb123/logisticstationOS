@@ -27,6 +27,14 @@ class Settings(BaseSettings):
 
     duckdb_path: str = "../data/analytics/stationos.duckdb"
 
+    # LLMProvider (ADR-0008): the first real adapter targets a local
+    # Ollama server — no API key, true local-first, per the project
+    # owner's explicit choice (docs/OPEN_QUESTIONS.md). Not installed on
+    # every dev machine by default; see docs/AGENTIC_ARCHITECTURE.md for
+    # setup and the FakeLLMProvider used where no live server is needed.
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3.1"
+
     @property
     def postgres_dsn(self) -> str:
         return (
