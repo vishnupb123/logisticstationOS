@@ -67,6 +67,46 @@ aspect ratio to compute its rendered height from `width: 100%` — set
 Both were caught by actually rendering the page and looking at a
 screenshot, not by reasoning about the code.
 
+## Live Operations and the end-to-end metrics
+
+`/live` (`src/views/LiveOperations.tsx`) consumes `GET /simulation/live`
+through the browser's own `EventSource` (`src/api/live.ts`, no extra
+dependency): the twin is played back frame by frame, so you can watch
+trucks arrive and parcels move through induct → sort (or jackpot) →
+stow. Frames update the KPIs, end-to-end funnel, stage cycle-time table,
+utilization meters, WIP and cumulative time series, hamper heat grid and
+event stream. It is always badged **Simulated run**.
+
+Station Overview shows the same end-to-end shape for the synthetic
+operational data (`GET /analytics/end-to-end`) and polls every 15s,
+with a visible "Updated Ns ago". Those numbers change only when new
+synthetic events are ingested and the pipeline (export → `dbt run`)
+re-runs. That is the honest answer to "why doesn't the overview move
+on its own?": there's no live operational source behind it, by design.
+
+`src/components/charts/TimeSeriesChart.tsx` measures its own width
+(ResizeObserver) and renders in true pixel coordinates, so neither SVG
+gotcha above applies to it and its SVG `<text>` ticks are safe. Prefer
+it for new time-series charts.
+
+## End-to-end tests
+
+`e2e/` is a permanent Playwright suite (15 tests) that runs against the
+**running** stack, with no mocks: shell and health, every route's
+data-source badge, overview metrics, live-run progression and
+completion, agent fallback findings surviving a reload, and RBAC
+(operator refused with 403, supervisor approves). Any browser console
+error fails a test unless that test explicitly allows it.
+
+```bash
+# backend on :8010 and `npm run dev` on :5173 first, then:
+npx playwright install chromium   # once
+npm run test:e2e                  # E2E_BASE_URL overrides http://localhost:5173
+```
+
+The suite writes to the dev database (it proposes and approves a
+decision, and runs the agent).
+
 ## Testing in a browser
 
 This sandbox doesn't have `chromium-cli`; Playwright (a devDependency
@@ -75,8 +115,6 @@ small one-off script per the `run` skill's `examples/playwright.md`
 fallback pattern (launch headless Chromium, `goto`, interact, screenshot,
 check `console --errors`-equivalent). That verification caught all of
 the real bugs above — nothing here was verified by reading code alone.
-No permanent test script/harness was committed this session (the
-driver scripts were scratch, removed after use); if browser-based
-verification becomes a recurring need, running `/run-skill-generator`
-to capture it as a project skill is worth doing (per the `run` skill's
-own recommendation) rather than re-improvising it each time.
+The repeatable part of that now lives in `e2e/` (above). For a one-off
+visual check (a screenshot to look at), a scratch Playwright script is
+still the quickest route.

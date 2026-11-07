@@ -38,8 +38,9 @@ Two things that were fine for a trusted local CLI script become real risks once 
 | GET | `/analytics/induct-throughput` | |
 | GET | `/analytics/stow-throughput` | |
 | GET | `/analytics/parcel-dwell-time` | |
+| GET | `/analytics/end-to-end` | Cycle-1 funnel (inducted / exception / sorted / ever-jackpotted / stowed) plus count, avg, p50, p90 for induct→sort, sort→stow and induct→stow, from `curated_parcel_lifecycle`. Status: `proposed`. |
 
-All five return **503** if the dbt pipeline hasn't been run against the configured DuckDB file yet (a clean, documented state for a frontend to render "not built yet," not a raw 500).
+All six return **503** if the dbt pipeline hasn't been run against the configured DuckDB file yet (a clean, documented state for a frontend to render "not built yet," not a raw 500).
 
 ### `/agents/flow-intelligence` — the AI investigations view
 
@@ -49,7 +50,7 @@ All five return **503** if the dbt pipeline hasn't been run against the configur
 | GET | `/agents/flow-intelligence/executions/{id}` | 404 if unknown |
 | POST | `/agents/flow-intelligence/run` | Runs the real agent with `OllamaProvider` — never `FakeLLMProvider`, which is test-only. If Ollama isn't reachable, `AgentExecutor`'s existing, already-tested fallback returns deterministic findings with `interpretation_error` set — this endpoint adds no new failure-handling logic. |
 
-**A real nuance found while building this**: when the LLM step falls back, `AgentExecutor` (Milestone 5) marks the execution `FAILED` and records `error`, but never writes the fallback output into the persisted row's `output` column — only a successful run does that. `POST .../run`'s response therefore always reflects the actual in-memory result (`output.model_dump()`), not only whatever happened to get persisted — otherwise a caller hitting the fallback path would see `output: null` despite a real, non-fabricated result having been computed. This wasn't changed in `app/orchestration/` itself (out of scope for an API-layer session); the API route compensates instead.
+**Fallback output is persisted** (fixed 2026-11-07): when the LLM step falls back, `AgentExecutor` marks the execution `FAILED`, records `error`, *and* stores the deterministic fallback output on the row (`repository.mark_failed(..., fallback_output=...)`). `GET .../executions/{id}` therefore returns the same findings `POST .../run` did, including after a reload. Before this fix the output was dropped, and both this route and the frontend carried workarounds; both are removed.
 
 ### `/simulation` — the digital-twin scenario runner view
 
@@ -57,6 +58,8 @@ All five return **503** if the dbt pipeline hasn't been run against the configur
 |---|---|---|
 | GET | `/simulation/scenarios` | Lists shipped scenario files (name, description) |
 | POST | `/simulation/run` | Body: `{"scenario": "<filename>", "seed": <optional override>}`. Runs synchronously, returns a summary (event count, per-event-type counts, `source_kind: "simulated"`) — never the raw event list, and never writes to disk (unlike `scripts/run_simulation.py`'s Parquet export; an HTTP endpoint shouldn't have an uncontrolled file-write side effect). |
+
+| GET | `/simulation/live?scenario=<filename>&seed=&step_seconds=30&frame_interval_ms=200` | **Server-Sent Events** stream of `LiveSnapshot` frames (`event: snapshot`), then `event: end`. Each frame: simulated clock, cumulative funnel counts, current WIP per stage, induct/stower utilization, per-aisle hamper levels, cycle-time stats (dock→stow, induct→sort, sort→stow, induct→stow) and the events emitted since the previous frame. Same shipped-scenario allow-list as `/run` (404 on unknown or traversal input). `step_seconds` is bounded to 5–600 and `frame_interval_ms` to 0–2000 (422 otherwise), and the stream is capped at `MAX_FRAMES` (2000), so it always terminates. Nothing is persisted, and every frame carries `source_kind: "simulated"`. Final counts match `/run` for the same scenario and seed (tested). |
 
 ### `/rl` — the RL policy-comparison view
 

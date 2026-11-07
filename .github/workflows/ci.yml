@@ -51,11 +51,9 @@ jobs:
       - name: Apply migrations (verifies alembic upgrade head on a fresh DB)
         run: alembic upgrade head
 
-      # Order matters: pytest's own schema fixture drops every table at
-      # session teardown (tests/conftest.py::_schema), which would wipe
-      # this seeded data and leave Alembic's version table stale if it
-      # ran first — see docs/OPEN_QUESTIONS.md. Seed, export, and run dbt
-      # before pytest, not after.
+      # pytest now runs against its own <db>_test database
+      # (tests/conftest.py), so it no longer wipes this seeded data —
+      # the order below is kept simply because it reads naturally.
       - name: Seed synthetic data for the analytics pipeline
         run: python scripts/generate_synthetic_events.py --seed 42 --trucks 6 --parcels-per-truck 20 --seed-db
 

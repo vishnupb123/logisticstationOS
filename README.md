@@ -30,7 +30,7 @@ What runs today:
 - **Predictive intelligence** (`backend/app/predictive/`): a jackpot-accumulation-risk classifier (logistic regression, two baselines) trained on digital-twin episodes, with temporal (seed-ordered, never-shuffled) train/test validation. A genuinely positive result — 0.857 ROC-AUC on held-out episodes, clearly beating both baselines — but only after catching and removing a feature pair that was really just a clock in disguise (measured correlation -1.0 in the fixed-arrival-schedule scenario, inflating accuracy to a misleading 0.96). Full writeup in `docs/PREDICTIVE_INTELLIGENCE_SPEC.md`.
 - **A real HTTP API** (`backend/app/api/routes/`): read endpoints for analytics/agent-execution-history/simulation/RL comparison, plus RBAC-gated write actions (propose/approve/reject/observe-outcome) on the decision-governance pipeline. No endpoint accepts an arbitrary filesystem or DuckDB path from a caller; CORS is a narrow local-dev allow-list, not a wildcard. See `docs/API_REFERENCE.md`.
 - **A frontend command centre** (`frontend/`): a Vite + React + TypeScript SPA with seven views (station overview, induct/sortation, stow/jackpot, AI investigations, digital-twin runner, RL comparison, decisions/audit — with a clearly-labeled dev-mode role picker for RBAC actions, not real authentication), every one stating whether what it shows is synthetic or simulated, never "live" — StationOS has no live operational system to be live against. See `frontend/README.md`.
-- A 190-test pytest suite (pure logic + real-Postgres integration tests, the latter skipping honestly rather than failing when Postgres isn't reachable), and a GitHub Actions CI workflow (lint, migrate, seed + export + `dbt run`/`dbt test`, then pytest — against a real Postgres service container) on every push/PR to `main`.
+- A 197-test pytest suite, run against its own `<db>_test` database so it never touches dev data, (pure logic + real-Postgres integration tests, the latter skipping honestly rather than failing when Postgres isn't reachable), and a GitHub Actions CI workflow (lint, migrate, seed + export + `dbt run`/`dbt test`, then pytest — against a real Postgres service container) on every push/PR to `main`.
 
 ## Repository layout
 
@@ -125,7 +125,7 @@ alembic upgrade head                                    # creates the Cycle-1 sc
 python scripts/generate_synthetic_events.py --seed 42 --seed-db   # seeds reference data + a sample event stream
 ```
 
-⚠️ Don't run `pytest` against the same database right after seeding dev data this way — the test suite creates and drops its own copy of every table directly (bypassing Alembic), which leaves Alembic's own version-tracking table out of sync with reality. If `alembic upgrade head` then silently does nothing against a database missing its tables, drop `alembic_version` and re-run it. Tracked as a real gap in [`docs/OPEN_QUESTIONS.md`](docs/OPEN_QUESTIONS.md) — the proper fix is a separate test database, not yet built.
+`pytest` runs against a separate `<db>_test` database (created automatically by `tests/conftest.py`), so it's safe to run while you have seeded dev data. If you have an older checkout where a test run wiped the dev tables and `alembic upgrade head` now does nothing, drop `alembic_version` and re-run it.
 
 ### Running the analytics pipeline
 
@@ -223,7 +223,8 @@ Needs Node 18+ and the backend API running (see above). From `frontend/`:
 ```bash
 npm install
 cp .env.example .env.local   # adjust VITE_API_BASE_URL if needed (8000 direct, 8010 via Docker Compose)
-npm run dev                  # http://localhost:5173
+npm run dev                  # http://localhost:5173 (Live Operations at /live)
+npm run test:e2e             # Playwright suite against the running stack
 ```
 
 Seven views — station overview, induct/sortation, stow/jackpot, AI investigations, digital-twin scenario runner, RL policy comparison, decisions/audit (with a dev-mode role picker, clearly labeled as not real authentication). See `frontend/README.md` and `docs/API_REFERENCE.md`.
