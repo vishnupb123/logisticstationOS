@@ -12,12 +12,9 @@ export function AiInvestigations() {
     mutationFn: agentsApi.run,
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["executions"] });
-      // AgentExecutor's LLM-fallback path never persists its output to
-      // the audit row (docs/API_REFERENCE.md) — GET .../executions/{id}
-      // would honestly show "no findings" for a fresh fallback run.
-      // Seed the detail query with this response (which does have the
-      // real in-memory result) so navigating to it right after running
-      // shows what was actually computed, not just what got persisted.
+      // The /run response is the same record GET .../executions/{id}
+      // returns (the fallback output is persisted too, since the
+      // AgentExecutor root-cause fix) — seeding saves one round trip.
       queryClient.setQueryData(["execution", data.id], data);
     },
   });

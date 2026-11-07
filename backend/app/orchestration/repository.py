@@ -30,10 +30,21 @@ def mark_completed(session: Session, execution: AgentExecution, output_payload: 
 
 
 def mark_failed(
-    session: Session, execution: AgentExecution, *, error: str, retry_count: int
+    session: Session,
+    execution: AgentExecution,
+    *,
+    error: str,
+    retry_count: int,
+    fallback_output: dict | None = None,
 ) -> None:
+    """Status stays FAILED (the LLM interpretation genuinely failed), but
+    the degraded, deterministic fallback result the caller actually
+    received is persisted too — otherwise the audit row can't show what
+    was returned, and every reader (API, UI) needed its own workaround.
+    """
     execution.status = AgentExecutionStatus.FAILED.value
     execution.error = error
+    execution.output = fallback_output
     execution.retry_count = retry_count
     execution.completed_at = datetime.now(UTC)
     session.flush()

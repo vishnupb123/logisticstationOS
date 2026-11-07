@@ -50,7 +50,7 @@ def run(db: Session = Depends(get_db)) -> AgentExecutionDetail:
         duckdb_path = str(resolve_duckdb_path())
         llm = OllamaProvider(settings.ollama_base_url, settings.ollama_model)
         executor = AgentExecutor(db, llm)
-        output = executor.run(AGENT, FlowIntelligenceInput(duckdb_path=duckdb_path))
+        executor.run(AGENT, FlowIntelligenceInput(duckdb_path=duckdb_path))
     except Exception:
         db.rollback()
         raise
@@ -65,14 +65,7 @@ def run(db: Session = Depends(get_db)) -> AgentExecutionDetail:
     assert execution is not None  # AgentExecutor.run always persists one
 
     detail = AgentExecutionDetail.model_validate(execution)
-    # On an LLM-interpretation fallback, AgentExecutor (Milestone 5,
-    # app/orchestration/runner.py) marks the execution FAILED and
-    # records `error`, but deliberately never writes the fallback
-    # output into the persisted row's `output` column — only a
-    # successful run does that (`mark_completed`). The caller still
-    # gets a real, non-fabricated result (deterministic findings,
-    # `interpretation_error` set) either way, so this endpoint always
-    # returns the actual in-memory result rather than only what
-    # happened to get persisted.
-    detail.output = output.model_dump(mode="json")
+    # AgentExecutor persists the fallback output on the FAILED path too
+    # (app/orchestration/repository.py::mark_failed), so the persisted
+    # row already matches the in-memory result — no override needed.
     return detail

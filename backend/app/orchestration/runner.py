@@ -142,7 +142,11 @@ class AgentExecutor:
         # marked failed even though a usable fallback is returned.
         fallback = agent.build_fallback_output(input_data, evidence, str(last_error))
         repository.mark_failed(
-            self._session, execution, error=str(last_error), retry_count=agent.max_retries
+            self._session,
+            execution,
+            error=str(last_error),
+            retry_count=agent.max_retries,
+            fallback_output=fallback.model_dump(mode="json"),
         )
         log.error(
             "agent_execution.degraded",

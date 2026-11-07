@@ -12,11 +12,7 @@ export function AiInvestigationDetail() {
     queryKey: ["execution", id],
     queryFn: () => agentsApi.getExecution(id!),
     enabled: !!id,
-    // A completed/failed execution's data never changes after the
-    // fact — and AiInvestigations.tsx seeds this exact query key with
-    // the real in-memory result right after a run, which a default
-    // (stale-on-mount) refetch would immediately clobber with the
-    // honestly-less-complete persisted row (see that file's comment).
+    // A completed/failed execution's data never changes after the fact.
     staleTime: Infinity,
   });
 

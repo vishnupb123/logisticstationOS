@@ -104,6 +104,9 @@ def test_exhausted_retries_returns_fallback_and_marks_execution_failed(db_sessio
     assert execution.status == AgentExecutionStatus.FAILED.value
     assert execution.error is not None
     assert execution.retry_count == 2
+    # The degraded result the caller received is persisted on the audit
+    # row too, not silently dropped (previously a documented gap).
+    assert execution.output == output.model_dump(mode="json")
 
 
 def test_resume_reuses_checkpoint_without_regathering_evidence(db_session):
