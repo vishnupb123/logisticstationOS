@@ -58,3 +58,8 @@ def stow_throughput() -> list[duckdb_queries.StowThroughputBucket]:
 @router.get("/parcel-dwell-time", response_model=duckdb_queries.ParcelDwellTimeStats)
 def parcel_dwell_time() -> duckdb_queries.ParcelDwellTimeStats:
     return _run_or_503(duckdb_queries.get_parcel_dwell_time_stats)
+
+
+@router.get("/end-to-end", response_model=duckdb_queries.EndToEndStats)
+def end_to_end() -> duckdb_queries.EndToEndStats:
+    return _run_or_503(duckdb_queries.get_end_to_end_stats)

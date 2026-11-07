@@ -110,3 +110,63 @@ def get_parcel_dwell_time_stats(duckdb_path: str) -> ParcelDwellTimeStats:
         max_dwell_seconds=row[2],
         avg_dwell_seconds=row[3],
     )
+
+
+class StageDuration(BaseModel):
+    count: int
+    avg_seconds: float | None
+    p50_seconds: float | None
+    p90_seconds: float | None
+
+
+class EndToEndStats(BaseModel):
+    """The Cycle-1 funnel and per-stage cycle times, from
+    `curated_parcel_lifecycle` (one row per parcel). Status: proposed —
+    same caveat as the other Milestone 3 metrics; the stage boundaries
+    are the event types' own, not a validated operational definition.
+    """
+
+    parcels_inducted: int
+    parcels_exception: int
+    parcels_sorted: int
+    parcels_ever_jackpotted: int
+    parcels_stowed: int
+    induct_to_sort: StageDuration
+    sort_to_stow: StageDuration
+    induct_to_stow: StageDuration
+
+
+_DURATION_SQL = "count({e}), avg({e}), quantile_cont({e}, 0.5), quantile_cont({e}, 0.9)"
+
+
+def get_end_to_end_stats(duckdb_path: str) -> EndToEndStats:
+    i2s = "date_diff('second', inducted_at, sorted_at)"
+    s2s = "date_diff('second', sorted_at, stowed_at)"
+    i2t = "date_diff('second', inducted_at, stowed_at)"
+    with closing(_connect(duckdb_path)) as con:
+        row = con.sql(
+            "SELECT "
+            "count(inducted_at), "
+            "count(*) FILTER (WHERE classification IS NOT NULL "
+            "AND classification <> 'normal_cycle1'), "
+            "count(sorted_at), count(first_jackpot_diverted_at), count(stowed_at), "
+            f"{_DURATION_SQL.format(e=i2s)}, {_DURATION_SQL.format(e=s2s)}, "
+            f"{_DURATION_SQL.format(e=i2t)} "
+            "FROM curated_parcel_lifecycle"
+        ).fetchone()
+    assert row is not None  # an aggregate without GROUP BY always returns one row
+
+    def stage(offset: int) -> StageDuration:
+        count, avg, p50, p90 = row[offset : offset + 4]
+        return StageDuration(count=count, avg_seconds=avg, p50_seconds=p50, p90_seconds=p90)
+
+    return EndToEndStats(
+        parcels_inducted=row[0],
+        parcels_exception=row[1],
+        parcels_sorted=row[2],
+        parcels_ever_jackpotted=row[3],
+        parcels_stowed=row[4],
+        induct_to_sort=stage(5),
+        sort_to_stow=stage(9),
+        induct_to_stow=stage(13),
+    )
