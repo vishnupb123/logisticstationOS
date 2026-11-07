@@ -1,0 +1,58 @@
+.funnel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.funnel__row {
+  display: grid;
+  grid-template-columns: 150px 1fr 56px 44px;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.funnel__label {
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.funnel__note {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.funnel__track {
+  height: 14px;
+  background: var(--page-plane);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.funnel__bar {
+  height: 100%;
+  background: var(--series-1);
+  border-radius: 0 4px 4px 0;
+  transition: width 0.25s ease-out;
+}
+
+.funnel__value {
+  text-align: right;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.funnel__conv {
+  text-align: right;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 640px) {
+  .funnel__row {
+    grid-template-columns: 100px 1fr 48px 38px;
+  }
+}

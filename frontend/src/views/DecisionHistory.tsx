@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { decisionsApi } from "../api/decisions";
 import type { CandidateIntervention } from "../api/types";
 import { Card } from "../components/Card";
@@ -34,6 +34,7 @@ const STATUS_FILTERS = ["", "pending_approval", "approved", "rejected", "shadow"
 
 export function DecisionHistory() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [statusFilter, setStatusFilter] = useState("");
   const [trigger, setTrigger] = useState("Manual proposal from the command centre");
   const [shadow, setShadow] = useState(false);
@@ -61,7 +62,12 @@ export function DecisionHistory() {
         candidates: PRESET_CANDIDATES,
         shadow,
       }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["decisions"] }),
+    onSuccess: (created) => {
+      queryClient.invalidateQueries({ queryKey: ["decisions"] });
+      // Take the operator straight to what they just proposed, rather
+      // than leaving them to find it in the history list.
+      navigate(`/decisions/${created.id}`);
+    },
   });
 
   return (

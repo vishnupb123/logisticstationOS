@@ -4,7 +4,7 @@
 // 403 (RBAC) from a 409 (state conflict) from a 503 (analytics not
 // built) apart, per docs/API_REFERENCE.md's error-mapping section.
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+export const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
 export class ApiError extends Error {
   status: number;

@@ -1,5 +1,6 @@
 import { api } from "./client";
 import type {
+  EndToEndStats,
   InductThroughputBucket,
   JackpotVolumeReading,
   ParcelDwellTimeStats,
@@ -13,4 +14,5 @@ export const analyticsApi = {
   inductThroughput: () => api.get<InductThroughputBucket[]>("/analytics/induct-throughput"),
   stowThroughput: () => api.get<StowThroughputBucket[]>("/analytics/stow-throughput"),
   parcelDwellTime: () => api.get<ParcelDwellTimeStats>("/analytics/parcel-dwell-time"),
+  endToEnd: () => api.get<EndToEndStats>("/analytics/end-to-end"),
 };

@@ -69,3 +69,69 @@
   padding: 24px 0;
   text-align: center;
 }
+
+/* TimeSeriesChart — true pixel coordinates, so SVG text is safe. */
+.ts-svg {
+  display: block;
+  overflow: visible;
+}
+
+.ts-grid {
+  stroke: var(--gridline);
+  stroke-width: 1;
+}
+
+.ts-baseline {
+  stroke: var(--baseline);
+  stroke-width: 1;
+}
+
+.ts-tick {
+  font-size: 11px;
+  fill: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ts-direct-label {
+  font-size: 11px;
+  font-weight: 600;
+  fill: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ts-crosshair {
+  stroke: var(--text-muted);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.ts-tooltip {
+  position: absolute;
+  min-width: 160px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-md);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.ts-tooltip__title {
+  color: var(--text-muted);
+  margin-bottom: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ts-tooltip__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ts-tooltip__label {
+  flex: 1;
+  color: var(--text-secondary);
+}

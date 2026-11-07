@@ -202,3 +202,74 @@ export interface ObserveOutcomeRequest {
   scenario: string;
   observe_seeds?: number[];
 }
+
+// --- end-to-end analytics (GET /analytics/end-to-end) ------------------
+
+export interface StageDuration {
+  count: number;
+  avg_seconds: number | null;
+  p50_seconds: number | null;
+  p90_seconds: number | null;
+}
+
+export interface EndToEndStats {
+  parcels_inducted: number;
+  parcels_exception: number;
+  parcels_sorted: number;
+  parcels_ever_jackpotted: number;
+  parcels_stowed: number;
+  induct_to_sort: StageDuration;
+  sort_to_stow: StageDuration;
+  induct_to_stow: StageDuration;
+}
+
+// --- live twin playback (GET /simulation/live, Server-Sent Events) ------
+
+export interface LiveFunnel {
+  trucks_arrived: number;
+  trucks_unloaded: number;
+  parcels_inducted: number;
+  parcels_exception: number;
+  parcels_sorted: number;
+  jackpot_diverts: number;
+  jackpot_clears: number;
+  parcels_stowed: number;
+}
+
+export interface LiveWip {
+  awaiting_induct: number;
+  inducting: number;
+  in_jackpot: number;
+  awaiting_stow: number;
+  stowing: number;
+}
+
+export interface LiveSnapshot {
+  frame: number;
+  sim_time_seconds: number;
+  sim_clock: string;
+  done: boolean;
+  planned_parcels: number;
+  funnel: LiveFunnel;
+  wip: LiveWip;
+  utilization: {
+    induct_busy: number;
+    induct_capacity: number;
+    stowers_busy: number;
+    stower_capacity: number;
+  };
+  hampers: { aisle_code: string; level: number; capacity: number }[];
+  cycle_times: {
+    dock_to_stow: StageDuration;
+    induct_to_sort: StageDuration;
+    sort_to_stow: StageDuration;
+    induct_to_stow: StageDuration;
+  };
+  recent_events: {
+    occurred_at: string;
+    event_type: string;
+    correlation_id: string;
+    detail: string | null;
+  }[];
+  source_kind: "simulated";
+}
