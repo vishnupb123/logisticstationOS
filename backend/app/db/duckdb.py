@@ -1,5 +1,5 @@
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 import duckdb
@@ -38,10 +38,24 @@ def get_duckdb_connection() -> Generator[duckdb.DuckDBPyConnection, None, None]:
 
 
 def check_connection() -> bool:
-    """Best-effort connectivity probe used by the readiness endpoint."""
+    """Best-effort connectivity probe used by the readiness endpoint.
+
+    Opens read-only when the file exists: DuckDB refuses a second
+    in-process connection to the same file with a *different*
+    configuration, so a read-write probe racing the analytics routes'
+    read-only connections (app/analytics/duckdb_queries.py) reported
+    "unreachable" whenever a dashboard loaded — found by watching the
+    UI's health indicator flip to degraded, reproduced with concurrent
+    requests. A missing file falls back to the original behaviour.
+    """
+    path = resolve_duckdb_path()
     try:
-        with get_duckdb_connection() as conn:
-            conn.execute("SELECT 1")
+        if path.exists():
+            with closing(duckdb.connect(str(path), read_only=True)) as conn:
+                conn.execute("SELECT 1")
+        else:
+            with get_duckdb_connection() as conn:
+                conn.execute("SELECT 1")
         return True
     except Exception:
         return False
