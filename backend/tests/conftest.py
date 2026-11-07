@@ -1,3 +1,52 @@
+"""Test-suite bootstrap.
+
+The suite runs against its own database, never the dev one: before any
+`app` module is imported (and so before Settings is cached and the
+SQLAlchemy engine is built), POSTGRES_DB is pointed at `<dev db>_test`,
+which is created on demand. Previously the suite shared the dev
+database, and the session-scoped `_schema` fixture's `drop_all` wiped
+every application table the running app depended on (events,
+decisions, agent executions) at the end of each `pytest` run — and
+committed dev rows could break `.one()`-style assertions mid-run.
+"""
+
+import os
+
+import psycopg
+from psycopg import sql
+
+
+def _use_isolated_test_database() -> None:
+    # Settings() directly — not the lru_cached get_settings() — so .env
+    # and env vars are honoured without caching the dev database name.
+    from app.core.config import Settings
+
+    base = Settings()
+    test_db = base.postgres_db if base.postgres_db.endswith("_test") else f"{base.postgres_db}_test"
+    os.environ["POSTGRES_DB"] = test_db
+    try:
+        with psycopg.connect(
+            host=base.postgres_host,
+            port=base.postgres_port,
+            user=base.postgres_user,
+            password=base.postgres_password.get_secret_value(),
+            dbname="postgres",
+            autocommit=True,
+            connect_timeout=3,
+        ) as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM pg_database WHERE datname = %s", (test_db,)
+            ).fetchone()
+            if not exists:
+                conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(test_db)))
+    except psycopg.OperationalError:
+        # Postgres unreachable: the `_schema` fixture below skips the
+        # tests that need it, exactly as before.
+        pass
+
+
+_use_isolated_test_database()
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
