@@ -23,9 +23,7 @@ _VERSION_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2})\.(\d+)$")
 def validate_version_format(version: str) -> None:
     match = _VERSION_PATTERN.match(version)
     if not match:
-        raise ValueError(
-            f"version {version!r} doesn't match the required 'YYYY-MM-DD.N' format"
-        )
+        raise ValueError(f"version {version!r} doesn't match the required 'YYYY-MM-DD.N' format")
     try:
         date.fromisoformat(match.group(1))
     except ValueError as exc:

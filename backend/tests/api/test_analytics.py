@@ -48,9 +48,7 @@ def test_induct_throughput_returns_real_rows(client, monkeypatch, tmp_path):
     import app.api.routes.analytics as route
 
     db_path = tmp_path / "metrics.duckdb"
-    build_metrics_duckdb(
-        db_path, induct_rows=[(datetime(2026, 1, 1, 3, tzinfo=UTC), 17)]
-    )
+    build_metrics_duckdb(db_path, induct_rows=[(datetime(2026, 1, 1, 3, tzinfo=UTC), 17)])
     monkeypatch.setattr(route, "resolve_duckdb_path", lambda: db_path)
 
     response = client.get("/analytics/induct-throughput")
@@ -67,9 +65,7 @@ def test_stow_throughput_returns_real_rows(client, monkeypatch, tmp_path):
     import app.api.routes.analytics as route
 
     db_path = tmp_path / "metrics.duckdb"
-    build_metrics_duckdb(
-        db_path, stow_rows=[(datetime(2026, 1, 1, 3, tzinfo=UTC), "STOWER-02", 9)]
-    )
+    build_metrics_duckdb(db_path, stow_rows=[(datetime(2026, 1, 1, 3, tzinfo=UTC), "STOWER-02", 9)])
     monkeypatch.setattr(route, "resolve_duckdb_path", lambda: db_path)
 
     response = client.get("/analytics/stow-throughput")

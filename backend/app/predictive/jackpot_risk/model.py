@@ -76,6 +76,4 @@ class LogisticRegressionRiskModel:
     def coefficients(self) -> dict[str, float]:
         """Interpretability — why this model was chosen over a more
         opaque one for a first attempt at this problem."""
-        return dict(
-            zip(FEATURE_COLUMNS, self._pipeline.named_steps["clf"].coef_[0], strict=True)
-        )
+        return dict(zip(FEATURE_COLUMNS, self._pipeline.named_steps["clf"].coef_[0], strict=True))

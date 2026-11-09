@@ -129,9 +129,7 @@ def run_episode_snapshots(
         features = _snapshot_features(ctx, aisle_codes)
         timeline.append((env.now, features))
 
-        episode_closed = (
-            ctx.trucks_remaining.value == 0 and ctx.parcels_in_flight.value == 0
-        )
+        episode_closed = ctx.trucks_remaining.value == 0 and ctx.parcels_in_flight.value == 0
         if episode_closed or step >= _MAX_STEPS_SAFETY:
             break
         step += 1

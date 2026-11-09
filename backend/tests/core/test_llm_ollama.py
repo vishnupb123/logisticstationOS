@@ -79,9 +79,7 @@ def test_strips_trailing_slash_from_base_url(monkeypatch):
     monkeypatch.setattr(httpx, "post", fake_post)
 
     provider = OllamaProvider(base_url="http://localhost:11434/", model="llama3.1")
-    provider.complete_structured(
-        system_prompt="s", user_prompt="u", response_model=_Finding
-    )
+    provider.complete_structured(system_prompt="s", user_prompt="u", response_model=_Finding)
 
     assert captured["url"] == "http://localhost:11434/api/chat"
 

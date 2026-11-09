@@ -19,7 +19,5 @@ def evaluate_predictions(y_true, y_pred_proba, *, threshold: float = 0.5) -> dic
     }
     # roc_auc_score is undefined with only one class present in y_true —
     # an honest None, not a crash or a fabricated number.
-    metrics["roc_auc"] = (
-        roc_auc_score(y_true, y_pred_proba) if len(set(y_true)) > 1 else None
-    )
+    metrics["roc_auc"] = roc_auc_score(y_true, y_pred_proba) if len(set(y_true)) > 1 else None
     return metrics

@@ -102,9 +102,7 @@ def test_non_normal_classification_stops_at_pending_exception():
 def test_missing_induct_event_is_flagged_but_still_projected():
     events = [
         FakeEvent(PARCEL_CLASSIFIED, _t(1), {"classification": "normal_cycle1"}),
-        FakeEvent(
-            PARCEL_SORT_ATTEMPTED, _t(2), {"outcome": "sorted", "aisle_code": "B40"}
-        ),
+        FakeEvent(PARCEL_SORT_ATTEMPTED, _t(2), {"outcome": "sorted", "aisle_code": "B40"}),
     ]
     projection = project_parcel(events)
 
