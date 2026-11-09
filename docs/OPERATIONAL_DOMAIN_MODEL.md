@@ -90,6 +90,8 @@ Status: proposed | validated | deprecated
 
 ### 4.1 Initial metric catalog
 
+> **Update 2026-11-08 (ADR-0011):** the Station Operations Twin now computes *proposed* drafts of DEA, OTD, Sort Compliance, Timely Staged, scan compliance and est. stow WIP compliance on **simulated** data only. Each formula is written out in `backend/app/simulation/station_ops/snapshot.py::METRIC_DEFINITIONS` and served at `GET /station-ops/metric-definitions`. DEA uses the publicly described definition (share of packages that receive a delivery attempt on/before the promised date); the others are generic operational definitions with configurable targets/tolerances. Their status below is unchanged: implementing a draft does not validate it.
+
 The exact calculation for organization-specific metrics (DEA, OTD, Sort Compliance, FPY, FSAF, WIPS) is **not known to this project** and must not be invented. Each is listed below with a generic description only; numerator/denominator/formula is `requires_validation` until confirmed by a domain owner.
 
 | Metric | Description (generic) | Status |

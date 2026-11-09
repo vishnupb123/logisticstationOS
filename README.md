@@ -32,6 +32,27 @@ What runs today:
 - **A frontend command centre** (`frontend/`): a Vite + React + TypeScript SPA with seven views (station overview, induct/sortation, stow/jackpot, AI investigations, digital-twin runner, RL comparison, decisions/audit — with a clearly-labeled dev-mode role picker for RBAC actions, not real authentication), every one stating whether what it shows is synthetic or simulated, never "live" — StationOS has no live operational system to be live against. See `frontend/README.md`.
 - A 197-test pytest suite, run against its own `<db>_test` database so it never touches dev data, (pure logic + real-Postgres integration tests, the latter skipping honestly rather than failing when Postgres isn't reachable), and a GitHub Actions CI workflow (lint, migrate, seed + export + `dbt run`/`dbt test`, then pytest — against a real Postgres service container) on every push/PR to `main`.
 
+### Live station (2026-11-09, ADR-0012)
+
+Open the app and a simulated operating day is already running, shared by every page:
+- Command Center, Receive, Sort, Stow, Problem Solve, Package Summary (dwell, ageing, RTS, search), Outbound, Pick, Stage, Dispatch & DSPs (with a live driver map), High Value, Associates, Shift Plan, Station & Resources, and Work Items;
+- five specialist agents acting on it (autopilot, copilot or observe);
+- the **Station Assistant** chat, e.g. "fix stow WIP", "notify late drivers", "what if we VET 3 stowers?".
+
+The session bar controls pause, speed, agent mode and starting a new day. See `docs/STATION_PROCESS_MODEL.md` for the process flow it models.
+
+### Station Operations (2026-11-08, ADR-0011)
+
+- **Command Center** (`/command`): a full simulated operating day of the station, streamed live.
+  - Linehauls with ferry delays → induct → sort → stow → cycle pick start (induct blocked, rollover) → pick → stage → depart → delivery attempt.
+  - Live metrics, all *proposed* definitions: DEA, OTD, sort compliance, timely staged, scan compliance and stow WIP compliance.
+- **Inbound Truckfile** (`/truckfile`): the daily ferry-status refresh that writes revised ETAs. The provider is synthetic.
+- **Station Operations Agent** (`/agent`):
+  - detects risks and simulates mitigation plans counterfactually;
+  - learns which levers work in which situation;
+  - on autopilot, mitigates inside the twin only;
+  - sends recommended plans to the human approval queue.
+
 ## Repository layout
 
 ```
@@ -169,7 +190,7 @@ from app.core.llm.ollama import OllamaProvider  # or FakeLLMProvider — see bel
 from app.db.postgres import SessionLocal
 from app.orchestration.runner import AgentExecutor
 
-llm = OllamaProvider(base_url="http://localhost:11434", model="llama3.1")  # requires Ollama running
+llm = OllamaProvider(base_url="http://localhost:11434", model="qwen2.5:1.5b")  # requires Ollama running
 session = SessionLocal()
 output = AgentExecutor(session, llm).run(AGENT, FlowIntelligenceInput(duckdb_path="../data/analytics/stationos.duckdb"))
 session.commit()
@@ -177,7 +198,7 @@ for finding in output.findings:
     print(finding.category, finding.summary)
 ```
 
-⚠️ `OllamaProvider` needs a real Ollama server (`ollama serve`, with `ollama pull llama3.1` or whatever `Settings.ollama_model` names) — not installed by default, not verified against a live server this session (`docs/OPEN_QUESTIONS.md`). Swap in `app.core.llm.fake.FakeLLMProvider([...])` with a scripted response to run the agent without Ollama — see `backend/tests/agents/flow_intelligence/test_agent.py` for worked examples, including the exact induced-jackpot-backlog scenario the agent is evaluated against.
+⚠️ `OllamaProvider` needs a real Ollama server: `brew install ollama && ollama serve`, then `ollama pull qwen2.5:1.5b` (the default `Settings.ollama_model`, sized for an 8 GB laptop). Live-verified 2026-11-08. Without it, agent runs complete as `degraded` (deterministic findings only). Swap in `app.core.llm.fake.FakeLLMProvider([...])` with a scripted response to run the agent without Ollama — see `backend/tests/agents/flow_intelligence/test_agent.py` for worked examples, including the exact induced-jackpot-backlog scenario the agent is evaluated against.
 
 ### Running the RL environment
 

@@ -82,6 +82,36 @@ All six return **503** if the dbt pipeline hasn't been run against the configure
 
 **RBAC's honest limitation applies here too**: `approver_role` is a role the HTTP caller *claims*, checked against a fixed table — there is no login/session system behind it yet. A future, real auth layer would supply the verified role; the API doesn't pretend to have one now.
 
+### `/station-ops`, `/inbound`, `/agents/station-ops`, `/llm` — Station Operations (2026-11-08, ADR-0011)
+
+- `GET /station-ops/presets` — the fixed allow-list of scenario presets (`normal_day`, `ferry_disruption`, `induct_line_outage`, `labor_shortage`, `peak_volume`). An unknown name gets a 404 and is never treated as a path.
+- `GET /station-ops/metric-definitions` — every metric's formula and `proposed` status, plus the agent's score weights and lever limits.
+- `POST /station-ops/run-day` `{preset, seed, source: preset|truckfile, ofd_date?, interventions[]}` — a one-shot what-if run of the full day. Interventions are checked against the policy engine's lever bounds (422 if out of bounds).
+- `GET /station-ops/live?preset&seed&mode=observe|advise|autopilot&source&ofd_date&learn&step_minutes&frame_interval_ms` — an SSE stream.
+  - Emits `event: frame` `{snapshot, agent: {risks, new_actions}}` until every route has departed, then `event: end`.
+  - Bounded by `MAX_FRAMES`.
+  - `autopilot` applies plans to the in-memory twin only. With `learn=true`, evaluations are written to the playbook.
+- `GET /inbound/truckfile?ofd_date` and `POST /inbound/truckfile/refresh` `{ofd_date, weather?, seed}` — the daily job: create the day's synthetic truckfile if missing, check every ferry sailing, and write revised ETAs. It is also available as `scripts/refresh_truckfile.py`.
+- `POST /agents/station-ops/run` `{preset, seed, source, ofd_date?, until_minute, propose_decisions}` — a persisted Station Operations Agent investigation.
+  - Records the agent's evaluations to the playbook.
+  - Creates one `station_ops_mitigation` decision (`pending_approval`) per recommended plan.
+  - Returns `{execution, decision_ids}`. The execution status is `completed`, or `degraded` if the LLM was unavailable; deterministic output is complete either way.
+- `GET /agents/station-ops/executions[/{id}]` and `GET /agents/station-ops/playbook` (learned per-situation lever statistics).
+- `GET /llm/status` — whether the configured Ollama model is reachable.
+- `POST /decisions/{id}/observe-outcome` — `scenario` is now optional. It is ignored for `station_ops_mitigation`, which re-runs the twin with the approved plan on fresh seeds (`kind: simulated_rerun_on_fresh_seeds`).
+
+### `/runtime` — live station runtime (2026-11-09, ADR-0012)
+
+- `GET /runtime/sessions` and `POST /runtime/sessions` `{preset, seed?, mode, speed, source: preset|truckfile, ofd_date?}` — start a live simulated day. The new session becomes the default; with no seed, a fresh random day is drawn.
+- `GET /runtime/sessions/{id|default}/state` — the snapshot, every page view, and agent risks, actions and pending recommendations.
+- `POST /runtime/sessions/{id}/control` `{paused?, speed?, mode?: observe|advise|autopilot}`.
+- `POST /runtime/sessions/{id}/actions` — an `Intervention` applied to the *simulated* station.
+  - Bounded by `LEVER_LIMITS` (422 if outside); `inject_disruption` kinds and magnitudes are capped.
+  - Actions include `add_stowers` / `add_pickers` (VET), `move_associates`, `open_induct_line`, `extend_cutoff`, `prioritize_route`, `sideline_route`, `unsideline_route`, `move_route_wave`, `notify_drivers` (route, late, all, `params.routes`, or `params.sector` + `leave_early_minutes`), `reassign_standby`, `notify_swipe_finish`, `resequence_unload`, `priority_late_linehauls`, and `start_scrub`.
+- `POST /runtime/sessions/{id}/recommendations/{action_id}/approve|dismiss` — copilot approvals (409 if not pending).
+- `POST /runtime/sessions/{id}/chat` `{message}` → `{reply, intent, actions, data, understood_by}`; `GET .../chat` returns the history.
+- `GET /runtime/sessions/{id}/search?q=` — a package, container (route) or associate.
+
 ## Interactive docs
 
 FastAPI auto-generates `/docs` (Swagger UI) and `/redoc` from the route/schema definitions above — run the server (`uvicorn app.main:app --reload`, or `docker compose up`) and open `http://localhost:8010/docs` (or `:8000` without the Docker port remap) to try any endpoint directly.

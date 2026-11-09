@@ -2,7 +2,7 @@
 
 **Purpose of this file**: the persistent, single source of truth for "where StationOS actually stands," written so a new engineering session (human or AI) can continue without this conversation's history. If something here conflicts with a doc in `docs/`, the more detailed doc wins for *content*; this file wins for *current status and what to do next*.
 
-Last updated: 2026-11-07 (post-roadmap hardening: live end-to-end view, an audit of what wasn't working, and fixes. All ten roadmap milestones remain complete.)
+Last updated: 2026-11-09 (live station runtime shared by every page; twin v2 with associates, HV cage, DSP drivers and RTS; five specialist agents; Station Assistant chat; 15 new live pages. All ten roadmap milestones remain complete.)
 
 ---
 
@@ -23,7 +23,120 @@ Last updated: 2026-11-07 (post-roadmap hardening: live end-to-end view, an audit
 
 **There is no "next milestone" queued.** `docs/ENGINEERING_ROADMAP.md`'s original ten-milestone sequence is fully delivered. §9 below discusses what a genuinely new phase of work could mean — don't assume one without asking.
 
-## 2. Latest session (2026-11-07): end-to-end live view and a flaw audit
+## 2. Latest session (2026-11-09): live station runtime, multi-agent orchestration, Station Assistant
+
+The owner asked for several things:
+- every screenshot feature implemented;
+- the Cycle-1 twin integrated into Station Overview;
+- an Associates tab;
+- agents that are adaptive rather than static (OTD was 96.3% in every scenario);
+- every page live;
+- a chatbot that can get agents to fix things ("fix stow WIP");
+- elaborated outbound: route prioritisation, high value, and a DSP coordination window with late drivers, wave moves, swipe-to-finish and live locations.
+
+Built (ADR-0012, feature map in `docs/STATION_PROCESS_MODEL.md`):
+- **Twin v2** (`backend/app/simulation/station_ops/`): individual associates (role, skill, live task, rebalancing, VET with a 45-min lead time from a finite flex pool), problem solve, the high-value cage (two custody scans; staging waits on handoff), bay capacity → jackpot, picklists (priority, sideline), carts and staging, DSP drivers (per-DSP lateness, no-shows with DSP auto-standby, notifications, sector traffic, standby reassignment, swipe-to-finish), stop-level delivery attempts, RTS, an ageing backlog with scrubs, progressively revealed ferry ETAs, seeded daily friction, and injectable disruptions. There are 6 presets, including the new `dispatch_disruption`. All actions are replayable `Intervention`s.
+- **Views** (`views.py`): one computed view per page, plus search.
+- **Five specialist agents + orchestrator** (`backend/app/agents/station_ops/`):
+  - reflexes (wave reminders, sector rerouting, standbys, prioritisation, swipe, HV reinforcement);
+  - robust counterfactual planning over belief futures (no oracle; OTD scored vs. the original plan);
+  - flex-pool arbitration;
+  - a situation-conditioned playbook;
+  - online capacity learning;
+  - bounded decision latency.
+- **Live runtime** (`backend/app/runtime/`): `StationSession` threads plus a session manager, and the `/runtime/*` API (state, control, actions, recommendations approve/dismiss, chat, search).
+- **Station Assistant** (`runtime/chat.py`): deterministic intents first; the local LLM only classifies into the same closed intent set.
+- **Frontend**:
+  - shared 1 s live polling; session bar (clock, pause, speed, agent mode, new day); global cycle alert, search, and an assistant on every page;
+  - new pages: Command Center (performance summary), Receive, Sort Overview, Stow & Buffers, Problem Solve, Package Summary (dwell, ageing, RTS, search), Outbound Overview (wave grid), Pick, Stage, Dispatch & DSPs (live map), High Value, Associates, Shift Plan, Station & Resources, Work Items, Agent Console, Assistant;
+  - Station Overview now shows the live day plus a continuously replaying Cycle-1 hamper twin, above the analytics history.
+
+Measured (seed 2, agents on autopilot, two belief futures):
+
+| Scenario | DEA without agents | DEA with agents | OTD without agents | OTD with agents |
+|---|---|---|---|---|
+| Normal day | — | — | 98.8% | 100% |
+| Induct line outage | 79.4% | 99.7% | — | — |
+| Ferry disruption | 89.2% | 94.0% | — | — |
+| Peak volume | 63.9% | 98.3% | 98.8% | 95.0% |
+| Dispatch disruption | — | — | 73.8% | 91.2% |
+
+OTD now varies by day and scenario; it is no longer a constant.
+
+Honest trade-off: on peak days the agents extend pick start, buying +34 DEA points at the cost of timely-staged (100% → 80%) and OTD (98.8% → 95.0%). The score weights (proposed) decide that trade.
+
+At high playback speeds, bounded decision latency makes the session pause while agents plan (the session bar shows "agents planning…"), so 60× is effectively slower on busy days.
+
+Flaws found by running it, all fixed:
+1. Agents acted hours late at fast playback, because wall-clock think time became simulated delay. Fixed by bounding decision latency.
+2. Detectors used nameplate induct rates, so shortfalls were caught at 06:30 instead of 03:00. Fixed with online capacity learning.
+3. A single absent stower collapsed DEA on unlucky seeds. Fixed with a labor-plan buffer.
+4. The HV handoff with one associate bottlenecked staging. Fixed by staffing 2 HV associates.
+5. The stow WIP band flagged healthy days. The band is now a proposed 0.5–10 min.
+6. Reminder spam in the logs. Reminders are now batched.
+7. Small mobile overflow. Fixed.
+
+Verification: backend 269 tests; Playwright 40 tests (every route plus live flows: new day, chat acting, dispatch actions, pick prioritisation, scrub, copilot approval, truckfile → live day); screenshots in light, dark and phone layouts.
+
+## 2a. Previous session (2026-11-08): Station Operations, the agentic loop, and the LLM fix
+
+The project owner shared screenshots of real station command-centre tooling in `images/`. They asked for:
+- the twin and the UI to be modelled on how such a station works;
+- station metrics (DEA, sort compliance, OTD, ...);
+- a daily truckfile updated from ferry status;
+- an agentic system that learns situations and mitigates risks;
+- a fix for the failing AI investigations.
+
+**The screenshots are never committed.** They contain real employee logins and identifiers (hard rule 1), and `images/` is gitignored. Only generic process concepts were taken from them; see ADR-0011.
+
+Built (ADR-0011):
+- **Station Operations Twin** (`backend/app/simulation/station_ops/`): a full-day, package-level SimPy model covering the whole flow.
+  - Flow: linehauls with ferry delays → doors/unload → induct lines (no-read/multi-read rework, outages) → sort (missorts, caught or left behind) → stow (WIP band) → cycle pick start, which blocks induct so late volume rolls over → pick → stage → depart (driver lateness) → delivery attempt (late routes run out of driver hours).
+  - Five presets.
+  - Mid-run levers: add stowers or pickers, open a spare induct line, extend pick start (capped at 45 min), prioritise late linehaul volume.
+  - Deterministic per seed; ~0.2 s per simulated day.
+  - Metrics, all `proposed`: DEA, OTD, sort compliance, timely staged, scan compliance, est. stow WIP compliance, induct FPH, stow PPH, lost hours.
+- **Truckfile** (`backend/app/inbound/`, table `linehaul_trips`): daily creation plus ferry-status refresh through `FerryStatusProvider`. The only implementation is a seeded synthetic provider; there is no real-site scraping. Available in the UI, via the API, and as `scripts/refresh_truckfile.py` for cron.
+- **Station Operations Agent** (`backend/app/agents/station_ops/`):
+  - Sense: rule-based detectors (late linehaul → rollover, induct/stow capacity shortfall, line down, routes at risk of stage-by, WIP band, quality).
+  - Simulate: counterfactual evaluation of candidate and compound plans (e.g. "+30 min pick start + 3 pickers").
+  - Score: proposed weights.
+  - Learn: playbook table `agent_playbook_entries`, conditioned on situation.
+  - Act: `observe`, `advise`, or `autopilot` (applies to the twin only).
+  - Persisted investigations send recommended plans to the approval queue as `station_ops_mitigation` decisions, with lever bounds in the policy engine, supervisor RBAC, and observed outcome re-run on fresh seeds.
+- **Frontend**: Command Center (`/command`, with Overview, Inbound, Package summary, Outbound route grid and Agent decision log tabs), Inbound Truckfile (`/truckfile`), and Station Agent (`/agent`, executions, learned playbook, LLM status). Decision detail renders station-ops candidates and outcomes.
+
+**The AI investigations "failure"** had two parts:
+1. Ollama wasn't installed, so every run hit `Connection refused`.
+2. The runner marked a run whose deterministic findings were complete as `failed`.
+
+Fixes: Ollama installed with `qwen2.5:1.5b` (the new default, fits 8 GB RAM, short keep-alive). Such runs are now `degraded`; `failed` is reserved for evidence errors, and evidence errors no longer leave rows stuck in `running`. The Flow Intelligence Agent now completes against the real model (~9 s).
+
+**Measured results** (seed 1, simulated):
+
+| Scenario | DEA before | DEA with agent on autopilot |
+|---|---|---|
+| Induct line outage | 80.0% | 99.8% |
+| Labor shortage | 70.9% | 99.8% |
+| Peak volume | 69.2% | 99.5% |
+| Ferry disruption | 88.0% | 93.7% |
+
+Every run kept timely-staged at 100%. The ~730 packages still lost in the ferry disruption are on sailings that arrive after any allowed cutoff; the agent holds rather than over-extending.
+
+**Flaws found by actually running it:**
+1. Two concurrent line outages produced duplicate same-type risks, caught by the e2e console-error guard.
+2. The playbook averaged lever scores across situations, so "extend pick start" scored after an extension was already applied made the agent stop extending early in later runs.
+
+Both are fixed, with regression tests.
+
+Verification:
+- Backend: 233 tests.
+- Playwright e2e: 21 tests, including the command-centre day, truckfile → simulate, and agent → approval → observed outcome.
+- Screenshots checked in light, dark and phone layouts, with no horizontal overflow.
+
+Run the stack with `ollama serve` (or `brew services start ollama`) alongside the backend and frontend.
+
+## 2c. Previous session (2026-11-07): end-to-end live view and a flaw audit
 
 The project owner ran the full stack and asked why they couldn't "see live changes" if the system mimics a station. They then asked for it to work end to end with enterprise-grade end-to-end metrics, and for a check of what wasn't working or wasn't implemented as planned.
 

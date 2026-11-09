@@ -25,7 +25,7 @@ Status values: `unresolved` (no leaning yet), `leaning` (a tentative direction e
 |---|---|---|---|
 | Custom orchestration state machine vs. LangGraph — final call | ADR-0005 starts custom; revisit condition is defined there | Revisit once 2+ agents need cross-agent checkpoint/resume behavior the custom machine is clearly straining to support | `leaning` |
 | Which LLM provider(s) back the production `LLMProvider` abstraction (ADR-0008)? | Needed before Milestone 5 can run anything for real | **Resolved 2026-10-31** by project-owner decision: a local Ollama server, for true local-first inference. See ADR-0008's amendment. | `resolved` |
-| Live verification of `OllamaProvider` against a real running Ollama server | Ollama isn't installed on this development machine; the adapter is only verified against a mocked HTTP layer so far | Install Ollama, `ollama pull <model>` matching `Settings.ollama_model` (default `llama3.1`), run `ollama serve`, then re-run the Flow Intelligence Agent with a real `OllamaProvider` instead of `FakeLLMProvider` | `unresolved` |
+| Live verification of `OllamaProvider` against a real running Ollama server | Was only verified against a mocked HTTP layer | **Resolved 2026-11-08**: Ollama 0.40 installed via Homebrew, `qwen2.5:1.5b` pulled (new default — fits an 8 GB laptop). The Flow Intelligence Agent and the Station Operations Agent both completed real runs against it (schema-constrained JSON validated; Flow Intelligence ~9 s). Honest caveat: a 1.5B model's inferences are shallow and sometimes wrong — they stay labelled `inferred`/`hypothesis`, never mixed with deterministic numbers. Use `OLLAMA_MODEL` for a bigger model on bigger hardware | `resolved` |
 | Dynamic, LLM-driven tool selection for agents whose evidence-gathering should vary by situation | The Flow Intelligence Agent always calls the same fixed five tools deterministically — no agent yet needs the LLM to choose among tools, so no permission-checking registry was built for that case | Build a real tool-permission-checking layer only when an agent actually needs variable tool selection (likely the Investigation Agent, Milestone 7+) — not speculatively now | `unresolved` |
 | Exact memory/retrieval mechanism for past decision records | `docs/AGENTIC_ARCHITECTURE.md` §Memory sketches the shape but not the implementation | None | `unresolved` |
 
@@ -70,3 +70,12 @@ Status values: `unresolved` (no leaning yet), `leaning` (a tentative direction e
 ## How to resolve one of these
 
 Update the row's status and leaning in this file, and if the resolution is a significant, hard-to-reverse architectural choice, promote it to a new ADR in `docs/adr/` rather than just editing this register — this file is for tracking the unknown, not for recording the decided.
+
+## Station Operations (2026-11-08, ADR-0011)
+
+| Question | Why it matters | Current thinking | Status |
+|---|---|---|---|
+| Are the station metric definitions (DEA, OTD, sort compliance, timely staged, scan compliance, est. stow WIP compliance) right? | They drive the agent's risk detection and plan scoring | Implemented as `proposed` drafts (`app/simulation/station_ops/snapshot.py::METRIC_DEFINITIONS`); DEA follows a public MIT-thesis description. Needs domain-owner sign-off before `validated` | `unresolved` |
+| What should the plan-scoring weights be (ΔDEA ×1, ΔOTD ×0.5, ΔTimely staged ×0.25, −0.02/labor-hour)? | They decide what the agent recommends | Proposed, versioned (`SCORE_VERSION`), stamped into every decision record | `unresolved` |
+| Real ferry/operator status feed for the truckfile refresh | The daily job currently uses a seeded synthetic provider | Implement a `FerryStatusProvider` adapter against an operator's published feed/API within its terms — never scraping, never in this public repo with real data | `unresolved` |
+| Should advise-mode recommendations from the *live stream* be sendable to the approval queue directly? | Today only a persisted investigation (`POST /agents/station-ops/run`) creates decision records | Leaning yes, via the same `propose_from_action`, once there's a reason to prefer it over a persisted run | `leaning` |
