@@ -27,7 +27,7 @@ POLICY_VERSION = "2026-10-31.1"
 #: Decision types this policy engine is willing to evaluate at all.
 #: Anything else is rejected outright — adding a new decision type is a
 #: deliberate code change here, not something a candidate can opt into.
-ELIGIBLE_DECISION_TYPES = {"aisle_stow_priority"}
+ELIGIBLE_DECISION_TYPES = {"aisle_stow_priority", "station_ops_mitigation"}
 
 
 class CandidateIntervention(BaseModel):
@@ -50,7 +50,10 @@ class CandidateRecord(BaseModel):
 
     name: str
     description: str
-    priority_weights: dict[str, float]
+    # aisle_stow_priority candidates carry weights; station_ops_mitigation
+    # candidates carry twin interventions instead (exactly one is used).
+    priority_weights: dict[str, float] = {}
+    interventions: list[dict] = []
     evaluation: dict
 
 
@@ -60,9 +63,7 @@ class PolicyEngineResult(BaseModel):
     policy_version: str = POLICY_VERSION
 
 
-def evaluate(
-    decision_type: str, candidates: list[CandidateIntervention]
-) -> PolicyEngineResult:
+def evaluate(decision_type: str, candidates: list[CandidateIntervention]) -> PolicyEngineResult:
     violations: list[str] = []
 
     if decision_type not in ELIGIBLE_DECISION_TYPES:
@@ -74,8 +75,7 @@ def evaluate(
         for aisle, weight in candidate.priority_weights.items():
             if not (0.0 <= weight <= 1.0):
                 violations.append(
-                    f"candidate {candidate.name!r}: weight for {aisle} ({weight}) "
-                    "is outside [0, 1]"
+                    f"candidate {candidate.name!r}: weight for {aisle} ({weight}) is outside [0, 1]"
                 )
             elif weight < MIN_PRIORITY_WEIGHT:
                 violations.append(
@@ -84,3 +84,28 @@ def evaluate(
                 )
 
     return PolicyEngineResult(eligible=len(violations) == 0, violations=violations)
+
+
+def evaluate_station_ops(candidates: list[dict]) -> PolicyEngineResult:
+    """Hard bounds for station-ops mitigation candidates — every lever
+    must be a known kind and within app/agents/station_ops/mitigations.py's
+    LEVER_LIMITS (e.g. never more than 45 min of pick-start extension,
+    never more than 6 extra stowers). Defense in depth: the twin caps the
+    cutoff extension itself too.
+    """
+    from app.agents.station_ops.mitigations import LEVER_LIMITS
+
+    violations: list[str] = []
+    for c in candidates:
+        if not c.get("interventions"):
+            violations.append(f"candidate {c.get('name')!r} has no interventions")
+        for iv in c.get("interventions", []):
+            kind, amount = iv.get("kind"), float(iv.get("amount", 0))
+            if kind not in LEVER_LIMITS:
+                violations.append(f"candidate {c.get('name')!r}: unknown lever {kind!r}")
+            elif not (0 < amount <= LEVER_LIMITS[kind]):
+                violations.append(
+                    f"candidate {c.get('name')!r}: {kind} amount {amount} outside "
+                    f"(0, {LEVER_LIMITS[kind]}]"
+                )
+    return PolicyEngineResult(eligible=not violations, violations=violations)

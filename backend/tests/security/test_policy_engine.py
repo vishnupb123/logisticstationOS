@@ -58,3 +58,20 @@ def test_multiple_candidates_each_independently_checked():
     assert result.eligible is False
     assert len(result.violations) == 1
     assert "bad" in result.violations[0]
+
+
+def test_station_ops_candidates_are_bounded_by_lever_limits():
+    from app.security.policy_engine import evaluate_station_ops
+
+    ok = evaluate_station_ops(
+        [{"name": "a", "interventions": [{"kind": "add_stowers", "amount": 4}]}]
+    )
+    assert ok.eligible
+    bad = evaluate_station_ops(
+        [
+            {"name": "b", "interventions": [{"kind": "add_stowers", "amount": 40}]},
+            {"name": "c", "interventions": [{"kind": "fire_everyone", "amount": 1}]},
+            {"name": "d", "interventions": []},
+        ]
+    )
+    assert not bad.eligible and len(bad.violations) == 3

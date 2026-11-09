@@ -27,7 +27,7 @@ from app.schemas.decisions import (
     ProposeDecisionRequest,
     RejectDecisionRequest,
 )
-from app.security import decision_service, repository
+from app.security import decision_service, repository, station_ops_decisions
 from app.security.rbac import RBACError
 from app.simulation.config import resolve_shipped_scenario_path
 
@@ -130,6 +130,19 @@ def observe_outcome(
     decision_id: uuid.UUID, request: ObserveOutcomeRequest, db: Session = Depends(get_db)
 ):
     record = _get_or_404(db, decision_id)
+    if record.decision_type == station_ops_decisions.DECISION_TYPE:
+        try:
+            updated = station_ops_decisions.observe_outcome(
+                db, record, observe_seeds=request.observe_seeds
+            )
+        except ValueError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        db.commit()
+        return updated
+
+    if request.scenario is None:
+        raise HTTPException(status_code=422, detail="scenario is required for this decision type")
     try:
         path = resolve_shipped_scenario_path(request.scenario)
     except FileNotFoundError as exc:

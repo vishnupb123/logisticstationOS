@@ -37,7 +37,7 @@ class RBACError(PermissionError):
 #: SUPERVISOR and ADMIN can.
 _ROLE_PERMISSIONS: dict[Role, frozenset[str] | str] = {
     Role.OPERATOR: frozenset(),
-    Role.SUPERVISOR: frozenset({"aisle_stow_priority"}),
+    Role.SUPERVISOR: frozenset({"aisle_stow_priority", "station_ops_mitigation"}),
     Role.ADMIN: "*",
 }
 

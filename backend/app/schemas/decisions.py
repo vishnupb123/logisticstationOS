@@ -70,5 +70,7 @@ class RejectDecisionRequest(BaseModel):
 
 
 class ObserveOutcomeRequest(BaseModel):
-    scenario: str
+    # Required for aisle_stow_priority; ignored for station_ops_mitigation
+    # (its preset/seed live in the decision's own context).
+    scenario: str | None = None
     observe_seeds: list[int] | None = Field(default=None, max_length=20)

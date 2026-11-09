@@ -96,6 +96,8 @@ extend-immutable-calls = ["fastapi.Depends"]
 # import or similar still gets caught.
 [tool.ruff.lint.per-file-ignores]
 "alembic/versions/*.py" = ["E501"]
+# User-facing chat replies are long sentences; splitting them hurts readability.
+"app/runtime/chat.py" = ["E501"]
 # conftest must redirect POSTGRES_DB to the isolated test database
 # *before* any app module (Settings, engine) is imported.
 "tests/conftest.py" = ["E402"]
