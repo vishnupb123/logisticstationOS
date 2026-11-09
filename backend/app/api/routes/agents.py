@@ -65,7 +65,7 @@ def run(db: Session = Depends(get_db)) -> AgentExecutionDetail:
     assert execution is not None  # AgentExecutor.run always persists one
 
     detail = AgentExecutionDetail.model_validate(execution)
-    # AgentExecutor persists the fallback output on the FAILED path too
-    # (app/orchestration/repository.py::mark_failed), so the persisted
+    # AgentExecutor persists the fallback output on the DEGRADED path too
+    # (app/orchestration/repository.py::mark_degraded), so the persisted
     # row already matches the in-memory result — no override needed.
     return detail

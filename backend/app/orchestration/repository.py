@@ -29,19 +29,38 @@ def mark_completed(session: Session, execution: AgentExecution, output_payload: 
     session.flush()
 
 
-def mark_failed(
+def mark_degraded(
     session: Session,
     execution: AgentExecution,
     *,
     error: str,
     retry_count: int,
+    fallback_output: dict,
+) -> None:
+    """The LLM interpretation step failed after retries, but the
+    deterministic fallback output is complete and is what the caller
+    received — so it is persisted, and the row is DEGRADED, not FAILED
+    (a failed LLM step used to mark the whole investigation "failed",
+    which read as "nothing worked" when the evidence and deterministic
+    findings were fine). The LLM error stays on the row for audit.
+    """
+    execution.status = AgentExecutionStatus.DEGRADED.value
+    execution.error = error
+    execution.output = fallback_output
+    execution.retry_count = retry_count
+    execution.completed_at = datetime.now(UTC)
+    session.flush()
+
+
+def mark_failed(
+    session: Session,
+    execution: AgentExecution,
+    *,
+    error: str,
+    retry_count: int = 0,
     fallback_output: dict | None = None,
 ) -> None:
-    """Status stays FAILED (the LLM interpretation genuinely failed), but
-    the degraded, deterministic fallback result the caller actually
-    received is persisted too — otherwise the audit row can't show what
-    was returned, and every reader (API, UI) needed its own workaround.
-    """
+    """Evidence gathering itself raised — there is no usable output."""
     execution.status = AgentExecutionStatus.FAILED.value
     execution.error = error
     execution.output = fallback_output
@@ -54,9 +73,7 @@ def get_by_id(session: Session, execution_id: uuid.UUID) -> AgentExecution | Non
     return session.get(AgentExecution, execution_id)
 
 
-def list_executions(
-    session: Session, *, agent_name: str | None = None
-) -> list[AgentExecution]:
+def list_executions(session: Session, *, agent_name: str | None = None) -> list[AgentExecution]:
     query = session.query(AgentExecution)
     if agent_name is not None:
         query = query.filter(AgentExecution.agent_name == agent_name)

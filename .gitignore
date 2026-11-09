@@ -47,3 +47,7 @@ ml/*
 .DS_Store
 .vscode/
 .idea/
+
+# Reference screenshots of real station tooling — contain real employee
+# logins/IDs; NEVER commit (CLAUDE.md hard rule 1). Local learning only.
+images/

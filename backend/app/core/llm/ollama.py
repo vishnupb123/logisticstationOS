@@ -23,9 +23,26 @@ _CHAT_PATH = "/api/chat"
 
 
 class OllamaProvider:
-    def __init__(self, base_url: str, model: str):
+    def __init__(self, base_url: str, model: str, keep_alive: str = "2m"):
         self._base_url = base_url.rstrip("/")
         self._model = model
+        # How long Ollama keeps the model resident after a call — short by
+        # default so a laptop's RAM is released between investigations.
+        self._keep_alive = keep_alive
+
+    @property
+    def model_name(self) -> str:
+        return f"ollama:{self._model}"
+
+    def is_available(self) -> bool:
+        """Cheap preflight: server reachable and the model pulled."""
+        try:
+            r = httpx.get(f"{self._base_url}/api/tags", timeout=2.0)
+            r.raise_for_status()
+            names = {m.get("name") for m in r.json().get("models", [])}
+        except (httpx.HTTPError, ValueError):
+            return False
+        return self._model in names or f"{self._model}:latest" in names
 
     def complete_structured(
         self,
@@ -46,6 +63,8 @@ class OllamaProvider:
             # prompt instruction alone produces parseable output.
             "format": response_model.model_json_schema(),
             "stream": False,
+            "keep_alive": self._keep_alive,
+            "options": {"temperature": 0},
         }
 
         try:

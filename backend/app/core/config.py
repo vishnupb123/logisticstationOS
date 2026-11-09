@@ -38,7 +38,10 @@ class Settings(BaseSettings):
     # every dev machine by default; see docs/AGENTIC_ARCHITECTURE.md for
     # setup and the FakeLLMProvider used where no live server is needed.
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "llama3.1"
+    # Small enough for an 8 GB laptop (~1 GB); override OLLAMA_MODEL for a
+    # bigger model on bigger hardware (e.g. llama3.1).
+    ollama_model: str = "qwen2.5:1.5b"
+    ollama_keep_alive: str = "2m"
 
     # CORS (Milestone 10's API layer): a local Vite dev server runs on
     # a different origin (port) than the API. This is a local-first,

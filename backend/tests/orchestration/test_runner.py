@@ -101,7 +101,7 @@ def test_exhausted_retries_returns_fallback_and_marks_execution_failed(db_sessio
     assert output == _Output(result=10)
 
     execution = _execution_for(db_session, "failing_agent")
-    assert execution.status == AgentExecutionStatus.FAILED.value
+    assert execution.status == AgentExecutionStatus.DEGRADED.value
     assert execution.error is not None
     assert execution.retry_count == 2
     # The degraded result the caller received is persisted on the audit
@@ -131,7 +131,7 @@ def test_resume_reuses_checkpoint_without_regathering_evidence(db_session):
     assert call_count["n"] == 1
 
     execution = get_by_id(db_session, _execution_for(db_session, "resumable_agent").id)
-    assert execution.status == AgentExecutionStatus.FAILED.value
+    assert execution.status == AgentExecutionStatus.DEGRADED.value
 
     succeeding_llm = FakeLLMProvider([_Output(result=100)])
     resumed_executor = AgentExecutor(db_session, succeeding_llm)

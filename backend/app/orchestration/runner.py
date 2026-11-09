@@ -68,8 +68,14 @@ class AgentExecutor:
             span.set_attribute("agent.execution_id", str(execution.id))
             log.info("agent_execution.started", agent=agent.name, execution_id=str(execution.id))
 
-            with tracer.start_as_current_span("agent_execution.gather_evidence"):
-                evidence = agent.gather_evidence(input_data)
+            try:
+                with tracer.start_as_current_span("agent_execution.gather_evidence"):
+                    evidence = agent.gather_evidence(input_data)
+            except Exception as exc:
+                # Persist the failure instead of leaving a row stuck in RUNNING.
+                repository.mark_failed(self._session, execution, error=f"evidence: {exc}"[:2000])
+                log.error("agent_execution.evidence_failed", agent=agent.name, error=str(exc))
+                raise
             repository.checkpoint(self._session, execution, evidence)
             log.info(
                 "agent_execution.checkpointed", agent=agent.name, execution_id=str(execution.id)
@@ -137,11 +143,11 @@ class AgentExecutor:
             )
             return output
 
-        # Degrade gracefully to "insufficient evidence" — never fabricate
-        # (docs/AGENTIC_ARCHITECTURE.md). The audit record is honestly
-        # marked failed even though a usable fallback is returned.
+        # Degrade gracefully — never fabricate (docs/AGENTIC_ARCHITECTURE.md).
+        # The audit record is DEGRADED: deterministic output is real and
+        # complete, the LLM layer is missing (error kept on the row).
         fallback = agent.build_fallback_output(input_data, evidence, str(last_error))
-        repository.mark_failed(
+        repository.mark_degraded(
             self._session,
             execution,
             error=str(last_error),

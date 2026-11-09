@@ -201,4 +201,4 @@ def test_end_to_end_degrades_gracefully_when_llm_is_unavailable(tmp_path, db_ses
         .filter(AgentExecution.agent_name == "flow_intelligence")
         .one()
     )
-    assert execution.status == AgentExecutionStatus.FAILED.value
+    assert execution.status == AgentExecutionStatus.DEGRADED.value

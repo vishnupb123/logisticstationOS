@@ -19,6 +19,11 @@ from app.db.postgres import Base
 class AgentExecutionStatus(StrEnum):
     RUNNING = "running"
     COMPLETED = "completed"
+    #: Deterministic evidence + findings are complete, but the LLM
+    #: interpretation step was unavailable/invalid after retries — the
+    #: output is real and usable, just without the LLM narrative layer.
+    DEGRADED = "degraded"
+    #: Evidence gathering itself raised — no usable output.
     FAILED = "failed"
 
 
