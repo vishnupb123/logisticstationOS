@@ -12,7 +12,7 @@ export function AiInvestigationDetail() {
     queryKey: ["execution", id],
     queryFn: () => agentsApi.getExecution(id!),
     enabled: !!id,
-    // A completed/failed execution's data never changes after the fact.
+    // A completed/degraded/failed execution's data never changes after the fact.
     staleTime: Infinity,
   });
 
@@ -36,11 +36,12 @@ export function AiInvestigationDetail() {
       </p>
 
       {data.output?.interpretation_error && (
-        <Card title="Interpretation error">
+        <Card title="Completed without the LLM narrative (degraded)">
           <ErrorState error={new Error(data.output.interpretation_error)} />
           <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 8 }}>
-            The LLM interpretation step failed after retries (e.g. no Ollama server reachable) —
-            the deterministic findings below are still real, never fabricated to compensate.
+            The LLM interpretation step failed after retries (e.g. no Ollama server reachable, or
+            the model's output didn't match the schema) — the deterministic findings below are
+            complete and real, never fabricated to compensate.
           </p>
         </Card>
       )}

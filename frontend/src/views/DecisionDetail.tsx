@@ -48,7 +48,11 @@ export function DecisionDetail() {
     onSuccess: invalidate,
   });
   const observeOutcome = useMutation({
-    mutationFn: () => decisionsApi.observeOutcome(id!, { scenario: SCENARIO }),
+    mutationFn: () =>
+      decisionsApi.observeOutcome(
+        id!,
+        decision.data?.decision_type === "station_ops_mitigation" ? {} : { scenario: SCENARIO },
+      ),
     onSuccess: invalidate,
   });
 
@@ -57,6 +61,9 @@ export function DecisionDetail() {
   if (!decision.data) return null;
 
   const d = decision.data;
+  const isStationOps = d.decision_type === "station_ops_mitigation";
+  const fmt = (v: number | undefined, unit = "pp") =>
+    v === undefined ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(2)}${unit}`;
   const actionError = approve.error ?? reject.error ?? observeOutcome.error;
 
   return (
@@ -84,6 +91,37 @@ export function DecisionDetail() {
       </Card>
 
       <Card title="Candidates (simulated evaluation)">
+        {isStationOps ? (
+          <div className="table-scroll">
+            <table data-testid="station-ops-candidates">
+              <thead>
+                <tr>
+                  <th>Plan</th>
+                  <th>ΔDEA</th>
+                  <th>ΔOTD</th>
+                  <th>ΔTimely staged</th>
+                  <th>Labor h</th>
+                  <th>Score</th>
+                </tr>
+              </thead>
+              <tbody>
+                {d.candidates.map((c) => (
+                  <tr key={c.name} style={{ fontWeight: c.name === d.selected_candidate ? 700 : 400 }}>
+                    <td>
+                      {c.name}
+                      {c.name === d.selected_candidate && " ✓"}
+                    </td>
+                    <td className="tabular">{fmt(c.evaluation.delta_dea_pp)}</td>
+                    <td className="tabular">{fmt(c.evaluation.delta_otd_pp)}</td>
+                    <td className="tabular">{fmt(c.evaluation.delta_timely_staged_pp)}</td>
+                    <td className="tabular">{c.evaluation.labor_hours?.toFixed(1) ?? "—"}</td>
+                    <td className="tabular">{c.evaluation.score?.toFixed(2) ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
         <table>
           <thead>
             <tr>
@@ -107,6 +145,7 @@ export function DecisionDetail() {
             ))}
           </tbody>
         </table>
+        )}
       </Card>
 
       <Card title="Policy engine & risk">
@@ -208,11 +247,25 @@ export function DecisionDetail() {
                 Observed outcome (fresh simulation, recorded{" "}
                 {d.outcome_recorded_at && new Date(d.outcome_recorded_at).toLocaleString()}):
               </p>
-              <ul>
-                <li>Reward: {d.observed_outcome.aggregate.total_reward_mean?.toFixed(2)}</li>
-                <li>Max backlog: {d.observed_outcome.aggregate.max_jackpot_backlog_mean?.toFixed(1)}</li>
-                <li>Stowed: {d.observed_outcome.aggregate.total_stowed_mean?.toFixed(1)}</li>
-              </ul>
+              {isStationOps ? (
+                <ul data-testid="observed-outcome">
+                  <li>
+                    Re-run on {d.observed_outcome.episodes.length} fresh seed(s) — mean ΔDEA{" "}
+                    {fmt(d.observed_outcome.aggregate.mean_delta_dea_pp)}
+                  </li>
+                  <li>Mean ΔOTD {fmt(d.observed_outcome.aggregate.mean_delta_otd_pp)}</li>
+                  <li>
+                    Mean ΔTimely staged {fmt(d.observed_outcome.aggregate.mean_delta_timely_staged_pp)}
+                  </li>
+                  <li>Mean score {d.observed_outcome.aggregate.mean_score?.toFixed(2)}</li>
+                </ul>
+              ) : (
+                <ul>
+                  <li>Reward: {d.observed_outcome.aggregate.total_reward_mean?.toFixed(2)}</li>
+                  <li>Max backlog: {d.observed_outcome.aggregate.max_jackpot_backlog_mean?.toFixed(1)}</li>
+                  <li>Stowed: {d.observed_outcome.aggregate.total_stowed_mean?.toFixed(1)}</li>
+                </ul>
+              )}
             </div>
           )}
           {actionError && <ErrorState error={actionError} />}

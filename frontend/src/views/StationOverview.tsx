@@ -9,6 +9,7 @@ import { Kpi, KpiGrid } from "../components/Kpi";
 import { PageHeader } from "../components/PageHeader";
 import { ErrorState, LoadingState } from "../components/QueryStates";
 import { formatAgo, formatDuration } from "../lib/format";
+import { Cycle1Panel, LiveDayPanel } from "./ops/OverviewLive";
 
 // The analytics snapshot only changes when the synthetic pipeline is
 // re-run (ingest -> Parquet export -> dbt), so polling is cheap and
@@ -58,7 +59,12 @@ export function StationOverview() {
       <PageHeader
         eyebrow="Operate"
         title="Station Overview"
-        badges={<DataSourceBadge kind="synthetic" />}
+        badges={
+          <>
+            <DataSourceBadge kind="synthetic" />
+            <DataSourceBadge kind="simulated" />
+          </>
+        }
         actions={
           <>
             <span className="refresh-meta" data-testid="refresh-meta">
@@ -74,10 +80,16 @@ export function StationOverview() {
           </>
         }
       >
-        Cycle-1 end-to-end metrics from the analytics pipeline (dbt over the synthetic event log).
-        These change when new synthetic events are ingested and the pipeline re-runs. To watch a
-        station operate frame by frame, use Live Operations.
+        Today's simulated day live (shared with every page), the Cycle-1 hamper-level twin running
+        beside it, and — below — the historical end-to-end metrics from the analytics pipeline (dbt
+        over the synthetic event log), which change when the pipeline re-runs.
       </PageHeader>
+
+      <div className="stack">
+        <LiveDayPanel />
+        <Cycle1Panel />
+      </div>
+      <h2 className="page-section-title">History — synthetic event-log analytics</h2>
 
       {anyError && <ErrorState error={anyError} />}
       {anyLoading && !anyError && <LoadingState />}

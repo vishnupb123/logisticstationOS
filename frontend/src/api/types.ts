@@ -139,7 +139,18 @@ export interface CandidateIntervention {
 }
 
 export interface CandidateRecord extends CandidateIntervention {
-  evaluation: PolicyEvaluation;
+  // aisle_stow_priority: an RL PolicyEvaluation; station_ops_mitigation:
+  // simulated metric deltas (see backend/app/security/station_ops_decisions.py).
+  evaluation: PolicyEvaluation & Partial<StationOpsCandidateEvaluation>;
+  interventions?: { kind: string; amount: number; at_minute: number }[];
+}
+
+export interface StationOpsCandidateEvaluation {
+  score: number;
+  delta_dea_pp: number;
+  delta_otd_pp: number;
+  delta_timely_staged_pp: number;
+  labor_hours: number;
 }
 
 export interface PolicyEngineResult {
@@ -169,7 +180,7 @@ export interface DecisionRecordOut {
   approver_role: Role | null;
   approval_rationale: string | null;
   decided_at: string | null;
-  observed_outcome: PolicyEvaluation | null;
+  observed_outcome: (PolicyEvaluation & { kind?: string; candidate?: string }) | null;
   outcome_recorded_at: string | null;
   created_at: string;
   updated_at: string;
@@ -199,7 +210,7 @@ export interface RejectDecisionRequest {
 }
 
 export interface ObserveOutcomeRequest {
-  scenario: string;
+  scenario?: string; // required for aisle_stow_priority only
   observe_seeds?: number[];
 }
 

@@ -1,0 +1,120 @@
+.sbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 24px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--series-1) 5%, var(--surface-1));
+  font-size: 13px;
+  position: relative;
+}
+
+.sbar--loading {
+  color: var(--text-muted);
+}
+
+.sbar__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--status-good);
+  animation: live-pulse 1.2s ease-in-out infinite;
+}
+
+.sbar__dot--paused {
+  background: var(--status-warning);
+  animation: none;
+}
+
+.sbar__dot--done {
+  background: var(--series-1);
+  animation: none;
+}
+
+.sbar__clock {
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.sbar__phase {
+  color: var(--text-secondary);
+}
+
+.sbar__scenario {
+  color: var(--text-secondary);
+  text-transform: capitalize;
+}
+
+.sbar__sim {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+  color: #6250d6;
+  border: 1px solid color-mix(in srgb, #6250d6 40%, transparent);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.sbar__spacer {
+  flex: 1;
+}
+
+.sbar select {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-primary);
+}
+
+.sbar__popover {
+  position: absolute;
+  right: 24px;
+  top: calc(100% + 6px);
+  z-index: 30;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-2, 0 6px 24px rgba(0, 0, 0, 0.15));
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 300px;
+}
+
+.sbar__popover label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .sbar {
+    padding: 8px 16px;
+  }
+  .sbar__popover {
+    right: 16px;
+    left: 16px;
+    width: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sbar__dot {
+    animation: none;
+  }
+}
+
+.sbar__thinking {
+  font-size: 11px;
+  color: var(--series-7);
+  animation: live-pulse 1.2s ease-in-out infinite;
+  border-radius: 4px;
+  padding: 1px 6px;
+}

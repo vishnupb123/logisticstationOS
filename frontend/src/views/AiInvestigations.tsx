@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { agentsApi } from "../api/agents";
 import { Card } from "../components/Card";
 import { DataSourceBadge } from "../components/DataSourceBadge";
+import { LlmStatusBadge } from "../components/LlmStatusBadge";
 import { EmptyState, ErrorState, LoadingState } from "../components/QueryStates";
 
 export function AiInvestigations() {
@@ -22,13 +23,15 @@ export function AiInvestigations() {
   return (
     <div>
       <div className="view-header">
-        <h1>AI Investigations</h1>
+        <h1>Flow Investigations</h1>
         <DataSourceBadge kind="synthetic" />
+        <LlmStatusBadge />
       </div>
       <p className="view-subtitle">
         Flow Intelligence Agent runs (Milestone 5) — deterministic observations/calculations from
         the analytics pipeline, plus an LLM-sourced hypothesis/inference/prediction layer. Evidence
-        categories are shown as-is, never flattened into plain prose.
+        categories are shown as-is, never flattened into plain prose. A run whose LLM step is
+        unavailable is <strong>degraded</strong>, not failed: its deterministic findings are complete.
       </p>
 
       <Card

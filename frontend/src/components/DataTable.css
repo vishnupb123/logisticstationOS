@@ -1,0 +1,83 @@
+.dt {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  position: relative;
+}
+
+.dt table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.dt thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-1);
+  z-index: 1;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--gridline);
+}
+
+.dt thead tr.dt__filters th {
+  top: 34px;
+  cursor: default;
+  padding: 4px 6px 6px;
+}
+
+.dt__filters input {
+  width: 100%;
+  min-width: 60px;
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--page-plane);
+  color: var(--text-primary);
+}
+
+.dt th.num,
+.dt td.num {
+  text-align: right;
+}
+
+.dt td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--gridline);
+  white-space: nowrap;
+}
+
+.dt__sort {
+  margin-left: 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.dt__count {
+  position: sticky;
+  bottom: 0;
+  text-align: right;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 4px 10px;
+  background: var(--surface-1);
+  border-top: 1px solid var(--gridline);
+}
+
+.dt tr.row-risk td {
+  background: color-mix(in srgb, var(--status-critical) 6%, transparent);
+}
+
+.dt tr.row-warn td {
+  background: color-mix(in srgb, var(--status-warning) 9%, transparent);
+}
+
+.dt .act {
+  flex-wrap: nowrap;
+}

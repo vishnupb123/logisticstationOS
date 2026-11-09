@@ -1,0 +1,253 @@
+.cc-desc {
+  font-size: 12px;
+  margin: 10px 0 0;
+}
+
+.cc-statusbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 28px;
+  padding: 10px 16px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-1);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.cc-statusbar > div {
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+}
+
+.cc-statusbar .muted {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cc-ext {
+  color: var(--status-warning);
+  font-weight: 500;
+}
+
+.cc-alerts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.cc-alert {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+}
+
+.cc-alert--warning {
+  background: color-mix(in srgb, var(--status-warning) 14%, var(--surface-1));
+  border-color: color-mix(in srgb, var(--status-warning) 50%, transparent);
+}
+
+.cc-alert--critical {
+  background: color-mix(in srgb, var(--status-critical) 10%, var(--surface-1));
+  border-color: color-mix(in srgb, var(--status-critical) 45%, transparent);
+}
+
+.cc-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+  overflow-x: auto;
+}
+
+.cc-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 8px 14px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.cc-tab:hover {
+  color: var(--text-primary);
+}
+
+.cc-tab--active {
+  color: var(--series-1);
+  border-bottom-color: var(--series-1);
+  font-weight: 600;
+}
+
+.cc-tab__badge {
+  font-size: 11px;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--status-critical) 15%, transparent);
+  color: var(--status-critical);
+}
+
+.cc-risk-list,
+.cc-iv-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.cc-risk-list .muted {
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.cc-subhead {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin: 16px 0 8px;
+}
+
+.cc-link {
+  margin-top: 12px;
+}
+
+.cc-foot {
+  font-size: 12px;
+  margin-top: 10px;
+}
+
+.cc-how {
+  padding-left: 18px;
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+}
+
+table .num {
+  text-align: right;
+}
+
+tr.row-risk td {
+  background: color-mix(in srgb, var(--status-critical) 6%, transparent);
+}
+
+.trip-status {
+  font-size: 12px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+.trip-status--arrived {
+  color: var(--status-good);
+}
+
+.trip-status--unloading {
+  color: var(--series-1);
+}
+
+.trip-status--cancelled {
+  color: var(--status-critical);
+}
+
+.perf-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.perf-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.perf-card__label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.perf-card__value {
+  font-size: 28px;
+  font-weight: 700;
+}
+
+.perf-card__sub {
+  font-size: 11px;
+}
+
+.perf-card__split {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.perf-q {
+  display: flex;
+  justify-content: space-between;
+  font-size: 14px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--gridline);
+}
+
+.perf-top {
+  margin-top: auto;
+  padding-top: 8px;
+  font-size: 12px;
+}
+
+.perf-top__title {
+  background: color-mix(in srgb, var(--status-warning) 15%, transparent);
+  border-radius: 4px;
+  padding: 3px 6px;
+  margin-bottom: 4px;
+  font-size: 11px;
+}
+
+.perf-top__row {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 0;
+}
+
+@media (max-width: 1100px) {
+  .perf-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .perf-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

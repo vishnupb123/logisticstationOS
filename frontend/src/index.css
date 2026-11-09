@@ -313,6 +313,11 @@ code {
   background: color-mix(in srgb, var(--status-critical) 15%, transparent);
 }
 
+.status-pill--degraded {
+  color: color-mix(in srgb, var(--status-warning) 70%, var(--text-primary));
+  background: color-mix(in srgb, var(--status-warning) 18%, transparent);
+}
+
 .status-pill--running {
   color: var(--status-warning);
   background: color-mix(in srgb, var(--status-warning) 18%, transparent);
