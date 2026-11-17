@@ -1,10 +1,100 @@
 # StationOS — Engineering Handoff
 
+> **Building v2?** Start with [`HANDOFF_V2.md`](HANDOFF_V2.md) (2026-11-13). It covers:
+> - the ordered study of the owner's v2 reference material;
+> - the v1-vs-reality audit;
+> - the pitch;
+> - twelve specified epics and the phased plan.
+>
+> This file remains the record of v1.
+
 **Purpose of this file**: the persistent, single source of truth for "where StationOS actually stands," written so a new engineering session (human or AI) can continue without this conversation's history. If something here conflicts with a doc in `docs/`, the more detailed doc wins for *content*; this file wins for *current status and what to do next*.
 
-Last updated: 2026-11-09 (live station runtime shared by every page; twin v2 with associates, HV cage, DSP drivers and RTS; five specialist agents; Station Assistant chat; 15 new live pages. All ten roadmap milestones remain complete.)
+Last updated: 2026-11-13 (v2 built — see §0 and HANDOFF_V2.md). Previously: 2026-11-09 (live station runtime shared by every page; twin v2 with associates, HV cage, DSP drivers and RTS; five specialist agents; Station Assistant chat; 15 new live pages. All ten roadmap milestones remain complete.)
 
 ---
+
+## 0. Latest session (2026-11-13): StationOS v2 built
+
+`HANDOFF_V2.md` was implemented end to end. ADRs:
+- ADR-0014: fidelity, metrics, statuses;
+- ADR-0015: work items;
+- ADR-0016: labor plan, opportunities, rotation.
+
+Summary:
+
+**Metrics** (`metrics.py`, `SettingsConfig`):
+- The owner's documented definitions are implemented exactly:
+  - Stow WIP = INC ÷ Stow FPH × 60, with a 15/30 band;
+  - compliance over 15-min intervals;
+  - Induct FPH over a rolling 10 min, with a dynamic target from remaining volume ÷ remaining belt run time;
+  - lost hours from belt gaps of 20–120 s;
+  - downtime DPMO = stops ÷ inducted × 10⁶;
+  - INC, dwell, pending re-induct, misdivert and network missorts.
+- Every metric shows its provenance and inputs in an ⓘ drawer.
+- Settings are editable live.
+
+**Twin:**
+- **Site-profile timeline:** trailers land on D-1 and wait in the yard; sort starts at 02:30 with breaks; pick starts at 10:00.
+- **Physical model:**
+  - an automated line with non-con diversion;
+  - auto-divert fingers (full bay → jackpot);
+  - a stow buffer of 10–24 min with a drain after pick start;
+  - containers per trip and trip legs;
+  - planned vs. unplanned volume.
+- **Problem-solve flows:**
+  - damaged packages go through manager approval;
+  - misdivert → re-induct;
+  - network missorts;
+  - missed induct;
+  - stower FSAF and spot checks.
+- **Cycle actions:** force induct, change cycle, enable next cycle; without a change, wrong-cycle holds.
+- **Runtime:**
+  - unified work items with expiry and carry-over;
+  - the `pitch_day` preset with chapter seek (forward on reflexes, backward by deterministic replay);
+  - `scale`;
+  - the shift report.
+
+**Planning:**
+- The labor plan has work groups and an hourly path grid.
+- VET/VTO are opportunities with sign-up windows: associates submit, the station accepts.
+- Rotation is a Hungarian assignment over trained and disallowed paths.
+
+**Agents:**
+- 14 new risks, with reflexes and planned candidates.
+- WIP compliance is a scored term (`wip_compliance_pp` 0.02, proposed); score version `2026-11-13.1`.
+
+**Assistant:**
+- 11 new topics (`explain_v2.py`) and v2 actions.
+- A golden eval of 60 cases: routing 20/20, fact recall 72/72, 0 grounding violations.
+
+**UI** (13 new or rebuilt pages):
+- Command Center tiles with drawers; the cycle banner; the work-item inbox and bell; Settings; Shift report; presenter chapters and scale.
+- Receive (planned/unplanned, linehauls with group-by and trip drawer); Sort (status, induct areas, containers); Stow (clusters, fingers).
+- Dwell/Ageing status trees with drill-downs; Plan vs. Actual.
+- Shift Plan (next day / pre-shift, opportunities); Rotation; Associates by path.
+
+**Measured** (seed 2, observe → autopilot, 2 belief futures; synthetic):
+
+| Preset | DEA | OTD | Stow WIP compliance |
+|---|---|---|---|
+| Normal day | 98.8% → 99.9% | 96.3% → 96.3% | 78% → 81% |
+| Ferry disruption | 87.3% → 94.0% | 96.3% → 96.3% | 59% → 39% |
+| Induct line outage | 72.4% → 99.9% | 95.0% → 96.3% | 63% → 74% |
+| Labor shortage | 98.5% → 99.7% | 92.5% → 96.3% | 59% → 48% |
+| Peak volume | 66.9% → 97.8% | 93.8% → 96.3% | 81% → 63% |
+| Dispatch disruption | 98.7% → 99.8% | 72.5% → 92.5% | 85% → 78% |
+| Pitch day | 87.5% → 94.3% | 92.5% → 96.3% | 67% → 36% |
+
+Honest trade-off: to save DEA the agents extend pick start and add induct capacity, which pushes Stow WIP out of its band on the hardest days. The WIP weight is proposed. Raise it if the site values WIP compliance over the last DEA points (Q12).
+
+**Verified:**
+- backend 335+ tests pass (`POSTGRES_PORT=5433`); ruff clean;
+- frontend build and lint clean;
+- Playwright: all specs pass (56, including the v2 shell and v2 pages specs), run serially. Parallel runs share the default session and flake.
+- Screenshots checked: light, dark, and 390 px.
+
+**Open:** Q1–Q14 in `docs/OPEN_QUESTIONS.md`. Nothing is committed yet. `V2/` is gitignored.
 
 ## 1. Current milestone status
 
@@ -22,6 +112,70 @@ Last updated: 2026-11-09 (live station runtime shared by every page; twin v2 wit
 | 10 — Operational command centre (Part 1: API, Part 2: frontend) | ✅ **Complete, both parts** |
 
 **There is no "next milestone" queued.** `docs/ENGINEERING_ROADMAP.md`'s original ten-milestone sequence is fully delivered. §9 below discusses what a genuinely new phase of work could mean — don't assume one without asking.
+
+## 1b. Latest session (2026-11-12, part 2): next day from the final truckfile, assistant as analysis + RAG + LLM
+
+- **GTDR** = Global Trailer Dock and Release (confirmed by the owner); the labels are updated.
+- **Removed pages:** Station Overview, Truckfile & Ferries and the Cycle-1 Live Twin. "/" now opens the Command Center, and the truckfile lives in Close-out & Tomorrow. Backend endpoints for the old pages (`/simulation/live`, `/inbound/truckfile`) are unchanged.
+- **Next day from the final truckfile:**
+  - `Closeout.next_day_config()` builds day N+1 from the final truckfile, today's carry-over (rollover, cluster transfer, re-attempts, late trailer) and the manager's plan (stowers, induct lines, problem solve, HV, pickers, routes).
+  - Revisions not yet learned still happen and are revealed 90 min before the trip.
+  - Exposed as `POST /runtime/sessions {source: "next_day"}`, the "Run day N+1" button and the session-bar option.
+  - Days chain indefinitely.
+- **Assistant (ADR-0013):** `explain.py` (DEA/OTD root cause with decisions and replay-without-decisions impact; trucks/ferries/truckfile/GTDR; labor and VET/VTO; tomorrow; decisions; shift) + `knowledge.py` (BM25 over a live corpus, cited sources) + a number-checked local-LLM summary + follow-up memory. Requests still coordinate the agents.
+- **Verified:**
+  - backend 300 passed;
+  - frontend build and lint clean;
+  - Playwright 38/38, including next day + assistant against the live LLM;
+  - assistant page screenshot checked; 0 px overflow at 390px.
+- **Known limit:** the 1.5B model's summaries can simplify or mislabel. They're labelled inferred, and numbers are guarded. `OLLAMA_MODEL=qwen2.5:7b` would read better.
+
+## 1a. Previous session (2026-11-12): after-dispatch close-out, floor/yard exceptions, road map
+
+The owner described what happens after dispatch (supervisor: GTDR, ferry checks / truckfile updates that are never truly final, in-station and on-road scrubs; manager: headcount, OFD volume, SPR, TPH → VET/VTO, which associates choose to accept, then the daily plan with aisle volume division and job rotation). They also asked for:
+- wrong-staging-scan alerts that manage the neighbouring routes and tell DSPs/drivers;
+- live staging and aisle floor plans;
+- a more realistic driver map;
+- VSA checks with grounded vans and their follow-up;
+- the sweep, with cluster transfer of left-behind parcels.
+
+Built:
+- **Twin** (`model.py`):
+  - per-route pre-drawn wrong staging scans (the route can't load until restaged; the neighbouring location is obstructed) and forgotten bags (flagged at staging);
+  - the problem-solve sweep follows the pickers aisle by aisle: a found parcel is staged to the cart if the van hasn't left, otherwise it becomes a `cluster_transfer`;
+  - yard-marshal VSA at check-in (finite marshals; minor defect fixed on site; grounded van → spare / borrowed / rental van, DSP default request after 20 min). VSA is folded into the 10-min launch-pad window (load 8 min);
+  - notifications for supervisor, manager and DSPs;
+  - `twin.urgent` wakes the agents immediately;
+  - the day ends only when close-out completes.
+- **Close-out** (`closeout.py`):
+  - supervisor and manager task queues;
+  - tomorrow's truckfile with ferry revisions learned only via checks, including after the final;
+  - GTDRs (proposed fields);
+  - scrubs;
+  - VET/VTO offers with lead-time-dependent acceptance;
+  - plan building (LPT aisle balancing, stow zones, rotation-aware assignment);
+  - an end-of-day `evaluate()` readiness against the full truth.
+- **Agents:**
+  - new risks: `cart_misstaged`, `bag_left_in_aisle`, `van_grounded`, `vsa_queue` (floor/dispatch), and `truckfile_changed_since_plan`, `next_day_staffing_gap`, `ferry_check_due`, `gtdr_open` (new **Shift Planning Agent**);
+  - reflexes for all of them;
+  - belief futures pin observed VSA and floor outcomes.
+- **Map** (`geo.py`): a generated city (grid, ring roads, radial highways, river with bridges); drivers move along shortest road paths; selected driver's path and stops; zoom.
+- **UI:**
+  - `/closeout`;
+  - Stage → live floor plan; Pick → live aisle plan;
+  - Dispatch → Yard · VSA and DSP comms tabs;
+  - a notification bell with acknowledge;
+  - new chat intents (`tomorrow`, `floor`, `yard` + actions).
+
+Measured, seed 2 normal day (observe → autopilot): OTD 92.5% → 97.5%, DEA 99.3% → 99.8%. On a peak day (seed 5), tomorrow's staffing gap went from 5.8 (manager default schedule) to 0.8 (agent's early VET). The baseline OTD is no longer ~98% on calm days, because grounded vans and misstages now really cost departures.
+
+Verified:
+- backend 284 passed (with Postgres on 5433);
+- frontend build and lint clean;
+- Playwright 11/11 in `station.spec.ts`; all other specs passed in the full run;
+- light, dark and 390px mobile screenshots checked (0 px horizontal overflow).
+
+Open: GTDR form, VET/VTO acceptance, VSA/floor rates and the rotation rule are proposed (docs/OPEN_QUESTIONS.md).
 
 ## 2. Latest session (2026-11-09): live station runtime, multi-agent orchestration, Station Assistant
 

@@ -32,12 +32,25 @@ What runs today:
 - **A frontend command centre** (`frontend/`): a Vite + React + TypeScript SPA with seven views (station overview, induct/sortation, stow/jackpot, AI investigations, digital-twin runner, RL comparison, decisions/audit — with a clearly-labeled dev-mode role picker for RBAC actions, not real authentication), every one stating whether what it shows is synthetic or simulated, never "live" — StationOS has no live operational system to be live against. See `frontend/README.md`.
 - A 197-test pytest suite, run against its own `<db>_test` database so it never touches dev data, (pure logic + real-Postgres integration tests, the latter skipping honestly rather than failing when Postgres isn't reachable), and a GitHub Actions CI workflow (lint, migrate, seed + export + `dbt run`/`dbt test`, then pytest — against a real Postgres service container) on every push/PR to `main`.
 
+### StationOS v2 (2026-11-13, ADR-0014/0015/0016, `HANDOFF_V2.md`)
+
+**What's new:**
+- **Fidelity:** the station's documented metric definitions, each with provenance and a "How this is calculated" drawer, plus a site-profile timeline.
+- **The physical model:** an automated sort line with fingers, containers and trip legs, cycles with force induct / change cycle, a canonical status tree with drill-downs, and problem-solve state machines.
+- **Planning:** labor plan v2 (work groups, hourly path grid), VET/VTO opportunities with sign-up windows, and shift rotation.
+- **Day-to-day surfaces:** unified work items, plan vs. actual, associate performance by path, and Settings.
+
+**Pitch demo:**
+1. In the session bar choose **New day → Pitch demo day**.
+2. Use the chapter buttons (01:00, 02:45, 06:30, 10:00, 12:30, 15:30).
+3. Finish with **Shift report**.
+
 ### Live station (2026-11-09, ADR-0012)
 
 Open the app and a simulated operating day is already running, shared by every page:
 - Command Center, Receive, Sort, Stow, Problem Solve, Package Summary (dwell, ageing, RTS, search), Outbound, Pick, Stage, Dispatch & DSPs (with a live driver map), High Value, Associates, Shift Plan, Station & Resources, and Work Items;
 - five specialist agents acting on it (autopilot, copilot or observe);
-- the **Station Assistant** chat, e.g. "fix stow WIP", "notify late drivers", "what if we VET 3 stowers?".
+- the **Station Assistant** (ADR-0013). It explains the shift: why DEA or OTD moved, what was decided and its simulated impact, trucks, ferries and truckfile, VET/VTO, and tomorrow's volume. Answers combine computed analysis, retrieval with cited sources, and a number-checked local-LLM summary. It also coordinates the agents ("fix stow WIP", "restage R-012", "re-plan tomorrow").
 
 The session bar controls pause, speed, agent mode and starting a new day. See `docs/STATION_PROCESS_MODEL.md` for the process flow it models.
 
@@ -46,7 +59,7 @@ The session bar controls pause, speed, agent mode and starting a new day. See `d
 - **Command Center** (`/command`): a full simulated operating day of the station, streamed live.
   - Linehauls with ferry delays → induct → sort → stow → cycle pick start (induct blocked, rollover) → pick → stage → depart → delivery attempt.
   - Live metrics, all *proposed* definitions: DEA, OTD, sort compliance, timely staged, scan compliance and stow WIP compliance.
-- **Inbound Truckfile** (`/truckfile`): the daily ferry-status refresh that writes revised ETAs. The provider is synthetic.
+- **Close-out & Tomorrow** (`/closeout`): after dispatch, the supervisor and manager close the day: GTDRs, ferry checks, the final truckfile (still revised after), scrubs, VET/VTO, and tomorrow's plan. "Run day N+1" simulates the next day from that final truckfile and plan. The daily truckfile refresh job (`POST /inbound/truckfile/refresh`, `scripts/refresh_truckfile.py`) still exists for a DB-backed truckfile.
 - **Station Operations Agent** (`/agent`):
   - detects risks and simulates mitigation plans counterfactually;
   - learns which levers work in which situation;
@@ -244,7 +257,7 @@ Needs Node 18+ and the backend API running (see above). From `frontend/`:
 ```bash
 npm install
 cp .env.example .env.local   # adjust VITE_API_BASE_URL if needed (8000 direct, 8010 via Docker Compose)
-npm run dev                  # http://localhost:5173 (Live Operations at /live)
+npm run dev                  # http://localhost:5173 (opens the Command Center)
 npm run test:e2e             # Playwright suite against the running stack
 ```
 

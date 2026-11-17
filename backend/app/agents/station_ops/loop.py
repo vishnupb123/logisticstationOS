@@ -53,6 +53,28 @@ from app.simulation.station_ops.snapshot import StationOpsSnapshot, build_snapsh
 Mode = Literal["observe", "advise", "autopilot"]
 COOLDOWN_MINUTES = 45
 REFLEX_COOLDOWN = 10
+#: Per-instance sudden events: the detector excludes ones already handled,
+#: so they are answered every cycle without a cooldown.
+_IMMEDIATE = {
+    "wave_checkin_upcoming",
+    "driver_late",
+    "cart_misstaged",
+    "bag_left_in_aisle",
+    "van_grounded",
+    "truckfile_changed_since_plan",
+    "gtdr_open",
+    "finger_full_bay",
+    "damaged_pending_approval",
+    "late_volume_at_pick_start",
+    "rotation_violation",
+}
+#: Offers take ~an hour to be answered; don't stack them every cycle.
+REFLEX_COOLDOWN_BY_TYPE = {
+    "next_day_staffing_gap": 30,
+    "vsa_queue": 15,
+    "network_missort_backlog": 30,
+    "unload_sequence_conflict": 20,
+}
 ADVISORY_COOLDOWN = 240
 MIN_GAIN_SCORE = 0.25
 MIN_EPISODES_TO_SKIP = 5
@@ -79,6 +101,8 @@ class AgentAction(BaseModel):
     advisory: str | None = None
     rationale: str
     status: Literal["applied", "pending", "dismissed", "held", "reported"] = "reported"
+    #: A person approved/dismissed it (kept visible in the work-item inbox).
+    decided_by_person: bool = False
 
 
 def list_interventions(twin: StationOpsTwin) -> list[Intervention]:
@@ -100,6 +124,8 @@ class StationOpsAgentLoop:
         self.session_factory = session_factory
         self.futures = futures
         self._last: dict[str, float] = {}
+        #: Seek/fast-forward: reflexes only, no counterfactual planning.
+        self.reflex_only = False
         self.actions: list[AgentAction] = []
         self.current_risks: list[Risk] = []
 
@@ -153,13 +179,16 @@ class StationOpsAgentLoop:
         for risk in sorted(risks, key=lambda r: (r.severity != "critical", -r.projected_impact)):
             reflex = reflexes_for(risk, twin, source=f"agent_{self.mode}")
             if reflex:
-                if risk.risk_type in ("wave_checkin_upcoming", "driver_late") or (
-                    now - self._last.get(f"reflex:{risk.risk_type}", -1e9) >= REFLEX_COOLDOWN
+                cool = REFLEX_COOLDOWN_BY_TYPE.get(risk.risk_type, REFLEX_COOLDOWN)
+                if risk.risk_type in _IMMEDIATE or (
+                    now - self._last.get(f"reflex:{risk.risk_type}", -1e9) >= cool
                 ):
                     self._last[f"reflex:{risk.risk_type}"] = now
                     new.append(self._reflex(risk, twin, reflex))
                 if risk.risk_type not in _PLANNED:
                     continue
+            if self.reflex_only:
+                continue  # chapter jump: planned decisions resume when the jump lands
             cooldown = (
                 COOLDOWN_MINUTES
                 if risk.risk_type in _PLANNED or risk.risk_type in ADVISORY

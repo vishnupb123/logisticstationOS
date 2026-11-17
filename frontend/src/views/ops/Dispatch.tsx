@@ -10,7 +10,9 @@ import { type Column, DataTable } from "../../components/DataTable";
 import { DataSourceBadge } from "../../components/DataSourceBadge";
 import { DriverMap } from "../../components/DriverMap";
 import { PageHeader } from "../../components/PageHeader";
-import { ActButton, LiveGate, Pill, Stat, StatRow } from "../../components/live";
+import { ActButton, LiveGate, Pill, Stat, StatRow, Tabs } from "../../components/live";
+import { NotificationList } from "../../components/Notifications";
+import type { YardRow } from "../../api/runtime";
 
 export function Dispatch() {
   return (
@@ -24,7 +26,92 @@ export function Dispatch() {
   );
 }
 
+const DTABS = [
+  { key: "drivers", label: "Drivers & live map" },
+  { key: "yard", label: "Yard · VSA" },
+  { key: "comms", label: "DSP comms" },
+] as const;
+
 function Body({ s }: { s: LiveState }) {
+  const [tab, setTab] = useState<(typeof DTABS)[number]["key"]>("drivers");
+  return (
+    <div className="stack">
+      <Tabs tabs={DTABS} value={tab} onChange={(t) => setTab(t as typeof tab)} />
+      {tab === "drivers" ? <Drivers s={s} /> : tab === "yard" ? <Yard s={s} /> : <Comms s={s} />}
+    </div>
+  );
+}
+
+function Yard({ s }: { s: LiveState }) {
+  const y = s.views.yard;
+  const cols: Column<YardRow>[] = [
+    { key: "route_id", label: "Route", filter: true },
+    { key: "driver_id", label: "Driver" },
+    { key: "dsp", label: "DSP", filter: true },
+    { key: "checked_in", label: "Checked in", value: (r) => r.checked_in ?? "—" },
+    { key: "wait_minutes", label: "VSA wait", num: true, render: (r) => (r.wait_minutes ? `${r.wait_minutes} min` : "—") },
+    {
+      key: "result",
+      label: "VSA result",
+      filter: true,
+      value: (r) => r.result ?? "—",
+      render: (r) =>
+        r.result ? (
+          <Pill value={r.result === "pass" ? "finished" : r.result === "grounded" ? "cancelled" : r.result === "in_progress" ? "loading" : "staging"} label={r.result.replace(/_/g, " ")} />
+        ) : (
+          "—"
+        ),
+    },
+    { key: "defect", label: "Defect", value: (r) => r.defect ?? "—" },
+    { key: "van_request", label: "Replacement", value: (r) => (r.van_request ? `${r.van_request} · ETA ${r.van_eta}` : "—") },
+    {
+      key: "act",
+      label: "Follow-up",
+      render: (r) =>
+        r.state === "grounded" && !r.van_request ? (
+          <ActButton action={{ kind: "request_replacement_van", target: r.route_id }} label="Request van" variant="primary" testId={`van-${r.route_id}`} />
+        ) : r.state === "grounded" ? (
+          <span className="muted">grounded {r.grounded_for} min · van coming</span>
+        ) : null,
+    },
+  ];
+  return (
+    <div className="stack" data-testid="yard-tab">
+      <StatRow>
+        <Stat label="Yard marshals" value={y.marshals} sub={y.extra_marshals ? `+${y.extra_marshals} assigned` : undefined} />
+        <Stat label="VSA queue" value={y.queue} sub={`booked ${y.booked_ahead_minutes} min ahead`} />
+        <Stat label="Audited" value={y.audited} />
+        <Stat label="Passed" value={y.passed} />
+        <Stat label="Fixed on site" value={y.minor_fixed} />
+        <Stat label="Grounded" value={y.grounded} sub={y.grounded_now ? <span className="late">{y.grounded_now} waiting now</span> : undefined} />
+      </StatRow>
+      <div className="toolbar-inline">
+        <ActButton action={{ kind: "add_yard_marshal" }} label="Assign an extra yard marshal" />
+        <span className="muted" style={{ fontSize: 12 }}>
+          Spare vans: {Object.entries(y.spare_vans).map(([k, v]) => `${k.replace("DSP-", "")} ${v}`).join(" · ")}
+        </span>
+      </div>
+      <p className="muted" style={{ fontSize: 13 }}>
+        Yard marshals audit every van before it loads. A minor defect (wiper, tyre pressure) is fixed on site; a
+        critical one grounds the van: the DSP is told, the van is taken out of service, and a replacement comes from
+        the DSP's spare vans, another DSP, or a rental. By default the DSP requests one 20 minutes after grounding.
+      </p>
+      <Card title="Vehicle safety audits">
+        <DataTable testId="vsa-table" columns={cols} rows={y.rows} rowKey={(r) => r.driver_id} rowClass={(r) => (r.state === "grounded" ? "row-risk" : r.result === "minor_fixed" ? "row-warn" : undefined)} empty="No vans have checked in yet." maxHeight={520} />
+      </Card>
+    </div>
+  );
+}
+
+function Comms({ s }: { s: LiveState }) {
+  return (
+    <Card title="Messages to DSPs and drivers (simulated)">
+      <NotificationList items={s.views.notifications.items} audience="dsp" />
+    </Card>
+  );
+}
+
+function Drivers({ s }: { s: LiveState }) {
   const d = s.views.dispatch;
   const m = s.snapshot.metrics;
   const [sel, setSel] = useState<string | null>(null);
@@ -38,6 +125,7 @@ function Body({ s }: { s: LiveState }) {
       : filter === "attention"
         ? (((x.late_by ?? 0) > 0 && ["off_duty", "en_route", "checked_in", "loading"].includes(x.state)) ||
           x.no_show_suspected ||
+          x.state === "grounded" ||
           x.state === "pending_swipe" ||
           x.driver_id === sel)
         : filter === "on_road"
@@ -81,6 +169,10 @@ function Body({ s }: { s: LiveState }) {
             </>
           )}
           {x.state === "pending_swipe" && <ActButton action={{ kind: "notify_swipe_finish" }} label="Remind swipe" />}
+          {x.state === "grounded" && !x.van_request && (
+            <ActButton action={{ kind: "request_replacement_van", target: x.route_id }} label="Replacement van" variant="primary" />
+          )}
+          {x.state === "grounded" && x.van_request && <span className="muted">van ETA {x.van_eta}</span>}
         </span>
       ),
     },

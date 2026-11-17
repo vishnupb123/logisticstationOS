@@ -5,14 +5,19 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { type Mode, runtimeApi, useControl, useStation } from "../api/runtime";
 import { stationOpsApi } from "../api/stationOps";
+import { PresenterBar } from "./PresenterBar";
 import "./SessionBar.css";
 
 const SPEEDS = [0.5, 1, 2, 5, 10, 30];
+const SCALES = [1, 1.5, 2];
+const PRESET_LABEL: Record<string, string> = { pitch_day: "Pitch demo day" };
+const presetLabel = (name: string) => PRESET_LABEL[name] ?? name.replace(/_/g, " ");
 const PHASE: Record<string, string> = {
   pre_shift: "Pre-shift",
   inbound_induct_stow: "Inbound · induct · stow",
   pick_stage: "Pick & stage",
   depart: "Departures",
+  closeout: "Close-out · planning tomorrow",
   on_road: "On road",
   complete: "Day complete",
 };
@@ -25,6 +30,15 @@ export function SessionBar() {
   const [open, setOpen] = useState(false);
   const [preset, setPreset] = useState("normal_day");
   const [seed, setSeed] = useState("");
+  const [scale, setScale] = useState(1);
+  const nextDay = useMutation({
+    mutationFn: () =>
+      runtimeApi.create({ source: "next_day", mode: q.data?.session.mode ?? "autopilot", speed: q.data?.session.speed ?? 2 }),
+    onSuccess: () => {
+      setOpen(false);
+      qc.invalidateQueries();
+    },
+  });
   const create = useMutation({
     mutationFn: () =>
       runtimeApi.create({
@@ -32,6 +46,7 @@ export function SessionBar() {
         seed: seed.trim() ? Number(seed) : null,
         mode: q.data?.session.mode ?? "autopilot",
         speed: q.data?.session.speed ?? 2,
+        scale,
       }),
     onSuccess: () => {
       setOpen(false);
@@ -55,7 +70,9 @@ export function SessionBar() {
       </span>
       <span className="sbar__phase">{PHASE[snap.phase]}</span>
       <span className="sbar__scenario" title={s.description}>
-        {s.preset.replace(/_/g, " ")} · seed {s.seed}
+        Day {s.day} · {s.ofd_date} · {s.preset.replace(/_/g, " ")}
+        {s.truckfile_version ? ` (truckfile v${s.truckfile_version})` : ""} · seed {s.seed}
+        {s.scale && s.scale !== 1 ? ` · ${s.scale}× scale` : ""}
       </span>
       <span className="sbar__sim">SIMULATED</span>
       {q.data?.agents.busy && (
@@ -104,9 +121,12 @@ export function SessionBar() {
             <select value={preset} onChange={(e) => setPreset(e.target.value)} aria-label="New day scenario">
               {(presets.data ?? []).map((p) => (
                 <option key={p.name} value={p.name} title={p.description}>
-                  {p.name.replace(/_/g, " ")}
+                  {presetLabel(p.name)}
                 </option>
               ))}
+              {presets.data && !presets.data.some((p) => p.name === "pitch_day") && (
+                <option value="pitch_day">{presetLabel("pitch_day")}</option>
+              )}
             </select>
           </label>
           <label>
@@ -119,9 +139,29 @@ export function SessionBar() {
               style={{ width: 90 }}
             />
           </label>
+          <label>
+            Scale
+            <select value={scale} onChange={(e) => setScale(Number(e.target.value))} aria-label="New day scale">
+              {SCALES.map((v) => (
+                <option key={v} value={v}>
+                  {v}× volume
+                </option>
+              ))}
+            </select>
+          </label>
           <p className="muted" style={{ fontSize: 12, margin: 0 }}>
             {presets.data?.find((p) => p.name === preset)?.description}
           </p>
+          <hr style={{ border: 0, borderTop: "1px solid var(--border)", width: "100%", margin: "4px 0" }} />
+          <button
+            className="button button--sm"
+            onClick={() => nextDay.mutate()}
+            disabled={!s.next_day_ready || nextDay.isPending}
+            title={s.next_day_ready ? "Simulate tomorrow from today's final truckfile and plan" : "Available once tomorrow's final truckfile is published (after dispatch)"}
+            data-testid="continue-next-day"
+          >
+            {nextDay.isPending ? "Starting…" : `Continue to day ${s.day + 1} from the final truckfile`}
+          </button>
           <button
             className="button button--primary button--sm"
             onClick={() => create.mutate()}
@@ -132,6 +172,7 @@ export function SessionBar() {
           </button>
         </div>
       )}
+      <PresenterBar />
     </div>
   );
 }

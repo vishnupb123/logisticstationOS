@@ -68,9 +68,9 @@ def test_belief_futures_hide_unrevealed_information():
 
 
 def test_counterfactual_finds_the_spare_line_for_an_outage():
-    # At 03:20 the agent knows L1 is jammed but NOT that L2 will jam at 05:00,
+    # At 03:45 the agent knows L1 is jammed but NOT that L2 will jam at 05:30,
     # so its (belief) estimate is smaller than hindsight would say — by design.
-    twin = _twin_at("induct_line_outage", 200)
+    twin = _twin_at("induct_line_outage", 225)
     _, evals = evaluate(
         None,
         [],
@@ -116,7 +116,7 @@ def test_dispatch_agent_protects_otd_with_reflexes():
 
 
 def test_advise_mode_queues_recommendations_without_applying():
-    twin = _twin_at("induct_line_outage", 200)
+    twin = _twin_at("induct_line_outage", 225)
     loop = StationOpsAgentLoop("advise", futures=1)
     actions = loop.step(twin, build_snapshot(twin, 0))
     assert any(a.status == "pending" for a in actions)
@@ -136,14 +136,14 @@ def test_arbitration_never_overspends_the_flex_pool():
 
 
 def test_chat_goal_is_pursued_and_applied():
-    twin = _twin_at("induct_line_outage", 200)
+    twin = _twin_at("induct_line_outage", 225)
     loop = StationOpsAgentLoop("advise", futures=1)
     a = loop.handle_goal(twin, "induct_line_down", "fix it")
     assert a.kind == "goal" and a.applied and a.applied_effects
 
 
 def test_concurrent_line_outages_are_one_risk():
-    twin = _twin_at("induct_line_outage", 310)
+    twin = _twin_at("induct_line_outage", 345)
     risks = [
         r for r in detect_risks(twin, build_snapshot(twin, 0)) if r.risk_type == "induct_line_down"
     ]
@@ -153,7 +153,7 @@ def test_concurrent_line_outages_are_one_risk():
 def test_learning_is_conditioned_on_situation(db_session):
     from app.agents.station_ops import playbook
 
-    twin = _twin_at("induct_line_outage", 200)
+    twin = _twin_at("induct_line_outage", 225)
     risk = next(
         r for r in detect_risks(twin, build_snapshot(twin, 0)) if r.risk_type == "induct_line_down"
     )

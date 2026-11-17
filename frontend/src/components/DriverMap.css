@@ -15,8 +15,8 @@
 }
 
 .dmap__zone {
-  fill: color-mix(in srgb, var(--series-1) 10%, transparent);
-  stroke: color-mix(in srgb, var(--series-1) 30%, transparent);
+  fill: color-mix(in srgb, var(--series-1) 5%, transparent);
+  stroke: color-mix(in srgb, var(--series-1) 18%, transparent);
   stroke-width: 0.06;
 }
 
@@ -83,4 +83,103 @@
 .dmap__legend-incident {
   background: color-mix(in srgb, var(--status-critical) 25%, transparent) !important;
   border-radius: 2px !important;
+}
+
+.dmap__tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.dmap__park {
+  fill: color-mix(in srgb, var(--status-good) 12%, transparent);
+}
+
+.dmap__river {
+  fill: none;
+  stroke: color-mix(in srgb, var(--series-1) 35%, var(--page-plane));
+  stroke-width: 0.9;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.dmap__road {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.dmap__road--street {
+  stroke: var(--gridline);
+  stroke-width: 0.12;
+}
+
+.dmap__road--ring {
+  stroke: var(--baseline);
+  stroke-width: 0.3;
+}
+
+.dmap__road--highway {
+  stroke: color-mix(in srgb, var(--series-4) 55%, var(--baseline));
+  stroke-width: 0.38;
+}
+
+.dmap__road--bridge {
+  stroke: var(--baseline);
+  stroke-width: 0.22;
+}
+
+.dmap__bridge {
+  fill: var(--surface-1);
+  stroke: var(--baseline);
+  stroke-width: 0.08;
+}
+
+.dmap__hood {
+  font-size: 0.85px;
+  fill: var(--text-muted);
+  font-style: italic;
+  pointer-events: none;
+}
+
+.dmap__yard {
+  fill: color-mix(in srgb, var(--series-7) 8%, transparent);
+  stroke: color-mix(in srgb, var(--series-7) 35%, transparent);
+  stroke-width: 0.06;
+  stroke-dasharray: 0.2 0.2;
+}
+
+.dmap__route {
+  fill: none;
+  stroke: var(--series-3);
+  stroke-width: 0.3;
+  stroke-linejoin: round;
+}
+
+.dmap__route--in {
+  stroke: var(--series-1);
+  stroke-dasharray: 0.5 0.3;
+}
+
+.dmap__route--tour {
+  stroke-width: 0.18;
+  stroke-dasharray: 0.3 0.2;
+}
+
+.dmap__route--back {
+  stroke: var(--text-muted);
+  stroke-dasharray: 0.4 0.3;
+}
+
+.dmap__stop {
+  fill: var(--surface-1);
+  stroke: var(--series-3);
+  stroke-width: 0.1;
+}
+
+.dmap__stop--done {
+  fill: var(--series-3);
 }

@@ -14,7 +14,7 @@ from app.simulation.station_ops.plan import build_preset
     [
         ("status", "summary"),
         ("what's at risk?", "risks"),
-        ("how is stow wip", "metric"),
+        ("how is stow wip", "explain"),  # v2: a computed Stow WIP analysis
         ("fix stow WIP", "fix_wip"),
         ("protect OTD", "protect_otd"),
         ("protect DEA from rollover", "protect_dea"),
@@ -28,6 +28,12 @@ from app.simulation.station_ops.plan import build_preset
         ("late trucks", "linehauls"),
         ("pause", "control"),
         ("approve all", "approve"),
+        ("plan for tomorrow", "tomorrow"),
+        ("any misstaged carts?", "floor"),
+        ("VSA status", "yard"),
+        ("restage R-12", "action"),
+        ("check ferry", "action"),
+        ("offer VET to 3", "action"),
     ],
 )
 def test_intent_parser(msg, intent):
@@ -120,3 +126,39 @@ def test_runtime_http_api(client):
         from app.runtime.session import manager
 
         manager.stop_all()
+
+
+def test_new_runtime_endpoints_and_chat(client):
+    r = client.post(
+        "/runtime/sessions",
+        json={"preset": "normal_day", "seed": 2, "mode": "observe", "speed": 60},
+    )
+    assert r.status_code == 200
+    m = client.get("/runtime/sessions/default/map").json()
+    assert m["roads"] and m["river"] and m["zones"]
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        st = client.get("/runtime/sessions/default/state").json()
+        if st["snapshot"]["clock"] >= "10:30":
+            break
+        time.sleep(0.5)
+    v = st["views"]
+    for key in ("yard", "staging_floor", "aisle_plan", "notifications", "closeout"):
+        assert key in v
+    drv = v["dispatch"]["drivers"][0]["driver_id"]
+    assert client.get(f"/runtime/sessions/default/drivers/{drv}/path").status_code == 200
+    assert client.get("/runtime/sessions/default/drivers/NOPE/path").status_code == 404
+    items = v["notifications"]["items"]
+    if items:
+        nid = items[0]["id"]
+        assert client.post(f"/runtime/sessions/default/notifications/{nid}/ack").json()["ack"]
+    assert (
+        "acked"
+        in client.post(
+            "/runtime/sessions/default/notifications/ack-all", json={"audience": "all"}
+        ).json()
+    )
+    reply = client.post("/runtime/sessions/default/chat", json={"message": "VSA status"}).json()
+    assert reply["intent"] == "yard" and "marshal" in reply["reply"]
+    bad = client.post("/runtime/sessions/default/actions", json={"kind": "offer_vet", "amount": 99})
+    assert bad.status_code == 422

@@ -1,0 +1,58 @@
+.wi__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.wi__filters label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.wi__title {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  align-items: baseline;
+  min-width: 180px;
+}
+
+.wi__tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.wi__actions {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.wi__soon {
+  font-weight: 700;
+  color: var(--status-critical);
+}
+
+.wi__soon::before {
+  content: "⏱ ";
+}
+
+.wi__err {
+  font-size: 12px;
+  color: var(--status-critical);
+}
+
+.wi__closed {
+  font-size: 12px;
+  white-space: nowrap;
+}

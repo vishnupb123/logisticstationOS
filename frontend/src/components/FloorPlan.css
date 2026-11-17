@@ -1,0 +1,329 @@
+.fp {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fp__scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.fp__waves {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fp__wave {
+  font: inherit;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-primary);
+  border-radius: 8px;
+  padding: 4px 10px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.fp__wave[aria-pressed="true"] {
+  border-color: var(--series-1);
+  background: color-mix(in srgb, var(--series-1) 10%, var(--surface-1));
+}
+
+.fp__risk-count {
+  background: var(--status-critical);
+  color: var(--on-fill);
+  border-radius: 8px;
+  font-size: 10px;
+  padding: 0 5px;
+  font-weight: 700;
+}
+
+.fp__floor {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 860px;
+  padding: 10px;
+  border: 1px dashed var(--baseline);
+  border-radius: 10px;
+  background: var(--page-plane);
+}
+
+.fp__lane {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.fp__lane-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.fp__slots {
+  display: grid;
+  grid-template-columns: repeat(20, minmax(36px, 1fr));
+  gap: 4px;
+}
+
+.fp__slot {
+  position: relative;
+  font: inherit;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  border-radius: 6px;
+  height: 52px;
+  padding: 2px 3px 0 3px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  overflow: hidden;
+  cursor: pointer;
+  color: var(--text-primary);
+  transition: opacity 0.2s;
+}
+
+.fp__slot-bar {
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 6px;
+}
+
+.fp__slot-loc {
+  font-size: 9px;
+  color: var(--text-muted);
+  line-height: 11px;
+}
+
+.fp__slot-route {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 15px;
+}
+
+.fp__carts {
+  width: 100%;
+  height: 3px;
+  background: var(--gridline);
+  border-radius: 2px;
+  margin-top: 2px;
+}
+
+.fp__carts span {
+  display: block;
+  height: 100%;
+  background: var(--text-secondary);
+  border-radius: 2px;
+}
+
+.fp__slot--risk {
+  border: 2px solid var(--status-critical);
+}
+
+.fp__slot--dim {
+  opacity: 0.25;
+}
+
+.fp__slot--active {
+  outline: 2px solid var(--series-1);
+  outline-offset: 1px;
+}
+
+.fp__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  border-radius: 7px;
+  font-size: 9px;
+  background: var(--status-critical);
+  color: var(--on-fill);
+  padding: 0 3px;
+}
+
+.fp__badge--on {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+}
+
+.fp__dock {
+  font-size: 11px;
+  color: var(--text-muted);
+  border-top: 2px solid var(--baseline);
+  padding-top: 6px;
+  text-align: center;
+  letter-spacing: 0.05em;
+}
+
+.fp__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.fp__legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.fp__legend i {
+  width: 12px;
+  height: 6px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.fp__detail {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--surface-1);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.fp__detail-risk {
+  color: var(--status-critical);
+  font-weight: 600;
+}
+
+/* aisle plan */
+.ap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 860px;
+  padding: 10px;
+  border: 1px dashed var(--baseline);
+  border-radius: 10px;
+  background: var(--page-plane);
+}
+
+.ap__cluster {
+  display: grid;
+  grid-template-columns: 70px 1fr;
+  gap: 8px;
+  align-items: start;
+}
+
+.ap__aisles {
+  display: grid;
+  grid-template-columns: repeat(20, minmax(36px, 1fr));
+  gap: 4px;
+}
+
+.ap__aisle {
+  position: relative;
+  font: inherit;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  border-radius: 6px;
+  height: 128px;
+  padding: 3px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+  color: var(--text-primary);
+}
+
+.ap__name {
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.ap__rack {
+  position: relative;
+  width: 14px;
+  height: 52px;
+  border: 1px solid var(--baseline);
+  border-radius: 2px;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 7px,
+    var(--gridline) 7px,
+    var(--gridline) 8px
+  );
+}
+
+.ap__rack-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: color-mix(in srgb, var(--series-1) 55%, transparent);
+  transition: height 0.8s;
+}
+
+.ap__legend-fill {
+  background: color-mix(in srgb, var(--series-1) 55%, transparent);
+}
+
+.ap__routes {
+  display: flex;
+  gap: 2px;
+}
+
+.ap__routes i {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.ap__people {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 2px;
+  min-height: 14px;
+}
+
+.ap__person {
+  font-size: 9px;
+  width: 14px;
+  height: 14px;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--series-2);
+  color: var(--on-fill);
+}
+
+.ap__person--sweep {
+  background: var(--series-7);
+}
+
+.ap__sweep {
+  font-size: 11px;
+  color: var(--text-muted);
+  height: 12px;
+}
+
+.ap__sweep--swept {
+  color: var(--status-good);
+}
+
+.ap__sweep--sweeping {
+  color: var(--series-7);
+}

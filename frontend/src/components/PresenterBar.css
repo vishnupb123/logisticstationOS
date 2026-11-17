@@ -1,0 +1,99 @@
+.pbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex-basis: 100%;
+  min-width: 0;
+}
+
+.pbar__toggle[aria-pressed="true"] {
+  border-color: var(--series-1);
+  color: var(--series-1);
+}
+
+.pbar__chapters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.pbar__chapter {
+  font: inherit;
+  font-size: 12px;
+  display: inline-flex;
+  gap: 6px;
+  align-items: baseline;
+  max-width: 100%;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.pbar__chapter:hover {
+  border-color: color-mix(in srgb, var(--series-1) 50%, transparent);
+}
+
+.pbar__chapter:focus-visible {
+  outline: 2px solid var(--series-1);
+  outline-offset: 2px;
+}
+
+.pbar__chapter--current {
+  background: color-mix(in srgb, var(--series-1) 14%, var(--surface-1));
+  border-color: var(--series-1);
+  font-weight: 600;
+}
+
+.pbar__chapter--current::before {
+  content: "▶";
+  font-size: 9px;
+}
+
+.pbar__clock {
+  font-weight: 700;
+}
+
+.pbar__title {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pbar__status {
+  font-size: 12px;
+}
+
+.pbar__status--err {
+  color: var(--status-critical);
+}
+
+@media (max-width: 640px) {
+  .pbar__title {
+    display: none;
+  }
+}
+
+/* Presenter mode: large type, dev chrome hidden. */
+body.presenter-mode .layout__content {
+  zoom: 1.18;
+}
+
+body.presenter-mode .sbar,
+body.presenter-mode .cbanner {
+  font-size: 15px;
+}
+
+body.presenter-mode .sbar__clock {
+  font-size: 22px;
+}
+
+body.presenter-mode .topbar__env {
+  display: none;
+}

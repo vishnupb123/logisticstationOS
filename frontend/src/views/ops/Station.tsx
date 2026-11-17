@@ -1,13 +1,14 @@
 // Station & resources (live layout, sort-path partitions, devices) and the
-// Work Items queue (tasks generated from live state, each with a one-click
-// coordination action where one exists).
+// unified Work Items inbox (HANDOFF_V2 E10).
 import { useState } from "react";
 import { Card } from "../../components/Card";
 import { DataTable } from "../../components/DataTable";
 import { DataSourceBadge } from "../../components/DataSourceBadge";
 import { PageHeader } from "../../components/PageHeader";
-import { ActButton, LiveGate, Pill, Stat, StatRow, Tabs } from "../../components/live";
+import { LiveGate, Pill, Stat, StatRow, Tabs } from "../../components/live";
+import { WorkItemInbox } from "../../components/WorkItemInbox";
 
+const CATEGORIES = ["Induct", "Sort", "Pick & Stage", "Dispatch", "Fleet", "Safety", "Ops Updates", "People"];
 const TABS = ["Station layout", "Sort paths", "Devices", "Event log"] as const;
 
 export function StationResources() {
@@ -129,27 +130,36 @@ export function WorkItems() {
   return (
     <div>
       <PageHeader eyebrow="Operate" title="Work Items" badges={<DataSourceBadge kind="simulated" />}>
-        Tasks raised from the live station state — each with a one-click coordination action where one exists.
+        One inbox for everything the simulated station needs a person to do — notifications, close-out tasks, scrubs and
+        reviews, and agent recommendations awaiting approval — with an expiring-in countdown on the simulated clock.
       </PageHeader>
       <LiveGate>
-        {(s) => (
-          <Card title={`${s.views.work_items.length} open item(s)`}>
-            {s.views.work_items.length === 0 ? (
-              <p className="muted">Nothing needs attention right now.</p>
-            ) : (
-              <ul className="work-items" data-testid="work-items">
-                {s.views.work_items.map((w, i) => (
-                  <li key={i}>
-                    <Pill value={w.priority === "high" ? "down" : "ready"} label={w.priority} />
-                    <span className="muted">{w.area}</span>
-                    <span className="work-items__title">{w.title}</span>
-                    {w.action && <ActButton action={w.action} label="Do it" />}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-        )}
+        {(s) => {
+          const w = s.views.work_items_v2;
+          const sm = w.summary;
+          return (
+            <div className="stack">
+              <StatRow>
+                <Stat label="Pending tasks" value={<span data-testid="wi-pending">{sm.pending}</span>} />
+                <Stat label="High priority" value={sm.high_priority} sub={sm.high_priority ? "act first" : undefined} />
+                <Stat label="Completed today" value={<span data-testid="wi-completed">{sm.completed_today}</span>} />
+                <Stat label="Expired today" value={sm.expired_today} sub={sm.dismissed_today ? `${sm.dismissed_today} dismissed` : undefined} />
+                <Stat label="Carried over" value={sm.carried_over} sub="from previous days" />
+                {sm.agent_recommendations !== undefined && <Stat label="Agent recommendations" value={sm.agent_recommendations} sub="today" />}
+              </StatRow>
+              <Card title="Pending by category">
+                <StatRow>
+                  {CATEGORIES.map((c) => (
+                    <Stat key={c} label={c} value={sm.by_category[c] ?? 0} />
+                  ))}
+                </StatRow>
+              </Card>
+              <Card title="Work item inbox">
+                <WorkItemInbox items={w.items} />
+              </Card>
+            </div>
+          );
+        }}
       </LiveGate>
     </div>
   );

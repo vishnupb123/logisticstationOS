@@ -3,13 +3,15 @@
 // lost review, RTS by type, and search for packages, containers (routes)
 // and associates.
 import { useQuery } from "@tanstack/react-query";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, Fragment, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { type LiveState, runtimeApi } from "../../api/runtime";
 import { Card } from "../../components/Card";
 import { DataTable } from "../../components/DataTable";
 import { DataSourceBadge } from "../../components/DataSourceBadge";
 import { PageHeader } from "../../components/PageHeader";
+import { DataUpdated } from "../../components/DataUpdated";
+import { StatusTree } from "../../components/StatusTree";
 import { ActButton, LiveGate, Pill, Stat, StatRow, Tabs } from "../../components/live";
 
 const TABS = ["Dwell", "Ageing", "RTS", "Search"] as const;
@@ -29,63 +31,43 @@ export function Packages() {
   );
 }
 
-function Matrix({ rows, cols, testId }: { rows: Record<string, string | number>[]; cols: string[]; testId: string }) {
-  return (
-    <div className="table-scroll">
-      <table data-testid={testId}>
-        <thead>
-          <tr>
-            <th>Status</th>
-            {cols.map((c) => (
-              <th key={c} className="num">
-                {c}
-              </th>
-            ))}
-            <th className="num">Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={String(r.status)}>
-              <td>
-                <strong>{r.status}</strong>
-              </td>
-              {cols.map((c) => (
-                <td key={c} className="num tabular">
-                  {Number(r[c] ?? 0).toLocaleString()}
-                </td>
-              ))}
-              <td className="num tabular">{cols.reduce((a, c) => a + Number(r[c] ?? 0), 0).toLocaleString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 function Dwell({ s }: { s: LiveState }) {
   const [by, setBy] = useState<"cycle" | "window">("cycle");
-  const d = s.views.dwell;
+  const t = by === "cycle" ? s.views.dwell_v2.by_cycle : s.views.dwell_v2.by_window;
   return (
     <Card
       title="Dwell"
       actions={
-        <div className="seg">
+        <div className="seg" role="group" aria-label="Dwell view">
           <button aria-pressed={by === "cycle"} onClick={() => setBy("cycle")}>By cycle</button>
           <button aria-pressed={by === "window"} onClick={() => setBy("window")}>By scheduled delivery window</button>
         </div>
       }
     >
-      {by === "cycle" ? <Matrix testId="dwell-cycle" rows={d.by_cycle} cols={d.columns} /> : <Matrix testId="dwell-window" rows={d.by_window} cols={d.windows} />}
+      <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
+        Every package is in exactly one status. Expand a group for its sub-statuses; every count opens the packages
+        behind it. {t.total.toLocaleString()} packages in today's tree.
+      </p>
+      <StatusTree
+        key={by}
+        testId={by === "cycle" ? "dwell-cycle" : "dwell-window"}
+        columns={t.columns}
+        groups={t.groups}
+        drill={(group, status, column) => ({ group, status, column, by })}
+        clock={s.snapshot.clock}
+      />
     </Card>
   );
 }
 
 function Ageing({ s }: { s: LiveState }) {
-  const a = s.views.ageing;
+  const a = s.views.ageing_v2;
+  const [leg, setLeg] = useState<"forward" | "reverse">("forward");
   const [review, setReview] = useState<"missing" | "lost" | null>(null);
   const list = review === "missing" ? a.missing_packages : review === "lost" ? a.lost_packages : [];
+  // Lists exist for packages in today's tree (the dwell groups); carried-over
+  // retained / missing / lost rows have their own review lists below.
+  const listable = new Set(s.views.dwell_v2.by_cycle.groups.map((g) => g.group));
   return (
     <div className="stack">
       <div className="toolbar-inline">
@@ -97,22 +79,19 @@ function Ageing({ s }: { s: LiveState }) {
         <button className="button button--sm" onClick={() => setReview("missing")} data-testid="review-missing">
           Review missing packages ({a.missing_packages.length})
         </button>
-        <button className="button button--sm" onClick={() => setReview("lost")}>
+        <button className="button button--sm" onClick={() => setReview("lost")} data-testid="review-lost">
           Review lost packages ({a.lost_packages.length})
         </button>
         {a.scrubs.map((sc, i) => (
           <Pill key={i} value="running" label={`${sc.kind.replace("_", "-")} scrub: ${sc.resolved} resolved`} />
         ))}
       </div>
-      <Card title="Ageing — forward leg">
-        <Matrix testId="ageing" rows={a.rows} cols={a.buckets} />
-      </Card>
       {review && (
         <Card title={review === "missing" ? "Missing packages" : "Lost packages (4+ days)"} actions={<button className="button button--sm" onClick={() => setReview(null)}>Close</button>}>
           <DataTable
             columns={[
               { key: "tracking_id", label: "Tracking ID", filter: true },
-              { key: "status", label: "Status" },
+              { key: "status", label: "Status", value: (r) => r.status.replace(/_/g, " ") },
               { key: "age_days", label: "Age (days)", num: true },
               { key: "resolution", label: "Resolution", value: (r) => r.resolution ?? "open" },
             ]}
@@ -122,6 +101,29 @@ function Ageing({ s }: { s: LiveState }) {
           />
         </Card>
       )}
+      <Card
+        title={`Ageing — ${leg} leg`}
+        actions={
+          <div className="seg" role="group" aria-label="Leg">
+            <button aria-pressed={leg === "forward"} onClick={() => setLeg("forward")}>Forward (delivery)</button>
+            <button aria-pressed={leg === "reverse"} onClick={() => setLeg("reverse")}>Reverse (returns)</button>
+          </div>
+        }
+      >
+        <StatusTree
+          key={leg}
+          testId="ageing"
+          columns={a.buckets}
+          groups={a[leg]}
+          totalKey="total"
+          drill={(group, status, column) => (leg === "forward" && column === undefined && listable.has(group) ? { group, status } : null)}
+          clock={s.snapshot.clock}
+        />
+        <p className="muted" style={{ fontSize: 12 }}>
+          Days in status come from each package's status-since time across chained days. Totals of today's statuses
+          open the package list.
+        </p>
+      </Card>
     </div>
   );
 }
@@ -170,6 +172,7 @@ function Rts({ s }: { s: LiveState }) {
             </tr>
           </tbody>
         </table>
+        <DataUpdated clock={s.snapshot.clock} />
       </Card>
     </div>
   );
@@ -184,50 +187,206 @@ function Search({ initial }: { initial: string }) {
     setQ(text.trim());
   };
   return (
-    <Card title="Search packages, containers (routes) or associates">
+    <Card title="Search packages, containers or associates">
       <form className="toolbar-inline" onSubmit={submit}>
-        <input aria-label="Search query" value={text} onChange={(e) => setText(e.target.value)} placeholder="PKG…, R-012, assoc…" style={{ minWidth: 260 }} />
+        <input aria-label="Search query" value={text} onChange={(e) => setText(e.target.value)} placeholder="PKG…, GAYLORD_…, R-012, assoc…" style={{ minWidth: 260 }} />
         <button className="button button--primary" type="submit">
           Search
         </button>
       </form>
       {res.data && res.data.kind === "none" && <p className="muted">No match.</p>}
       {res.data && res.data.kind !== "none" && (
-        <div data-testid="search-results">
+        <div data-testid="search-results" className="stack">
           <p className="muted">
-            {res.data.results.length} {res.data.kind} result(s)
+            {res.data.results.length} {res.data.kind === "container_v2" ? "container" : res.data.kind} result(s)
           </p>
-          {res.data.results.map((r, i) => (
-            <div key={i} className="search-result">
-              <table>
-                <tbody>
-                  {Object.entries(r)
-                    .filter(([k]) => k !== "timeline" && k !== "rotation")
-                    .map(([k, v]) => (
-                      <tr key={k}>
-                        <td className="muted" style={{ width: 180 }}>
-                          {k.replace(/_/g, " ")}
-                        </td>
-                        <td>
-                          <strong>{v === null || v === undefined ? "—" : String(v)}</strong>
-                        </td>
-                      </tr>
-                    ))}
-                </tbody>
-              </table>
-              {Array.isArray(r.timeline) && (
-                <ol className="search-timeline">
-                  {(r.timeline as { event: string; clock: string }[]).map((t) => (
-                    <li key={t.event}>
-                      <span className="tabular">{t.clock}</span> {t.event}
-                    </li>
-                  ))}
-                </ol>
-              )}
-            </div>
-          ))}
+          {res.data.results.map((r, i) =>
+            res.data!.kind === "container_v2" ? (
+              <ContainerResult key={i} r={r as unknown as ContainerHit} />
+            ) : res.data!.kind === "associate" ? (
+              <AssociateResult key={i} r={r as unknown as AssociateHit} />
+            ) : res.data!.kind === "package" ? (
+              <PackageResult key={i} r={r as unknown as PackageHit} />
+            ) : (
+              <GenericResult key={i} r={r} />
+            ),
+          )}
         </div>
       )}
     </Card>
+  );
+}
+
+type TimelineEv = { event: string; clock: string; actor?: string };
+interface ContainerHit {
+  id: string;
+  type: string;
+  linehaul: string;
+  origin: string;
+  total: number;
+  pending_induct: number;
+  inducted: number;
+  stowed: number;
+  clusters: Record<string, number>;
+  timeline: TimelineEv[];
+}
+interface AssociateHit {
+  login: string;
+  role: string;
+  home_role: string;
+  present: boolean;
+  task: string;
+  location: string | null;
+  shift_start: string | null;
+  activity?: { clock: string; role: string; until: string | null }[];
+  inducted?: number;
+  stowed?: number;
+  fsaf?: number;
+  spot_checks?: number;
+  units?: number;
+}
+interface PackageHit {
+  tracking_id: string;
+  status: string;
+  route_id: string | null;
+  cycle: string;
+  location: string | null;
+  container?: string | null;
+  planned?: boolean;
+  ps_state?: string | null;
+  misdivert?: string | null;
+  line?: string | null;
+  inducted_by?: string | null;
+  stowed_by?: string | null;
+  high_value?: boolean;
+  timeline?: TimelineEv[];
+  [k: string]: unknown;
+}
+
+const label = (k: string) => k.replace(/_/g, " ");
+
+function Timeline({ items, testId }: { items: TimelineEv[]; testId?: string }) {
+  return (
+    <ol className="legs" data-testid={testId} style={{ marginTop: 8 }}>
+      {items.map((t, i) => (
+        <li key={`${t.event}-${i}`} className="legs--done">
+          <span className="tabular">{t.clock}</span> {t.event}
+          {t.actor && <span className="muted"> · {t.actor}</span>}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function ContainerResult({ r }: { r: ContainerHit }) {
+  return (
+    <div className="search-result" data-testid="search-container">
+      <h3 style={{ margin: "0 0 6px", fontSize: 14 }}>
+        {r.type === "GAYLORD" ? "Gaylord" : r.type === "PALLET" ? "Pallet" : r.type} {r.id}
+      </h3>
+      <StatRow>
+        <Stat label="Pending induct" value={r.pending_induct} sub={`of ${r.total}`} />
+        <Stat label="Inducted" value={r.inducted} />
+        <Stat label="Stowed" value={r.stowed} />
+        <Stat label="Linehaul" value={<span style={{ fontSize: 16 }}>{r.linehaul}</span>} sub={r.origin} />
+      </StatRow>
+      <p className="muted" style={{ margin: 0 }}>
+        Clusters: {Object.entries(r.clusters ?? {}).map(([k, v]) => `${k} ${v}`).join(" · ") || "—"}
+      </p>
+      <Timeline items={r.timeline ?? []} testId="container-timeline" />
+    </div>
+  );
+}
+
+function AssociateResult({ r }: { r: AssociateHit }) {
+  return (
+    <div className="search-result" data-testid="search-associate">
+      <h3 style={{ margin: "0 0 6px", fontSize: 14 }}>
+        {r.login} <Pill value={r.present ? "running" : "neutral"} label={r.present ? "present" : "absent"} />
+      </h3>
+      <dl className="kv">
+        <dt>Current path</dt>
+        <dd>{label(r.role)} (home: {label(r.home_role)})</dd>
+        <dt>Task / location</dt>
+        <dd>
+          {label(r.task)} · {r.location ?? "—"}
+        </dd>
+        <dt>Shift start</dt>
+        <dd>{r.shift_start ?? "—"}</dd>
+      </dl>
+      <StatRow>
+        <Stat label="Inducted" value={r.inducted ?? 0} />
+        <Stat label="Stowed" value={r.stowed ?? 0} />
+        {r.fsaf !== undefined && <Stat label="FSAF" value={r.fsaf} sub={`${r.spot_checks ?? 0} spot checks`} />}
+        {r.units !== undefined && <Stat label="Units" value={r.units} />}
+      </StatRow>
+      <h4 className="page-section-title">Activity</h4>
+      <ol className="legs" data-testid="associate-activity">
+        {(r.activity ?? []).map((a, i) => (
+          <li key={i} className={a.until ? "legs--done" : "legs--active"}>
+            <strong>{label(a.role)}</strong>{" "}
+            <span className="tabular muted">
+              {a.clock} – {a.until ?? "now"}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function PackageResult({ r }: { r: PackageHit }) {
+  const fields: [string, unknown][] = [
+    ["Status", label(r.status)],
+    ["Cycle", r.cycle],
+    ["Route", r.route_id],
+    ["Location", r.location],
+    ["Container", r.container],
+    ["Planned", r.planned === undefined ? undefined : r.planned ? "Planned (in container plan)" : "Unplanned"],
+    ["Induct line", r.line],
+    ["Inducted by", r.inducted_by],
+    ["Stowed by", r.stowed_by],
+    ["PS state", r.ps_state ? label(r.ps_state) : "none"],
+    ["Misdivert", r.misdivert ? label(r.misdivert) : "none"],
+  ];
+  return (
+    <div className="search-result" data-testid="search-package">
+      <h3 style={{ margin: "0 0 6px", fontSize: 14 }}>
+        {r.tracking_id} {r.high_value && <Pill value="planned" label="High value" />}
+      </h3>
+      <dl className="kv">
+        {fields.map(([k, v]) => (
+          <Fragment key={k}>
+            <dt>{k}</dt>
+            <dd>{v === null || v === undefined || v === "" ? "—" : String(v)}</dd>
+          </Fragment>
+        ))}
+      </dl>
+      {Array.isArray(r.timeline) && <Timeline items={r.timeline} testId="package-timeline" />}
+    </div>
+  );
+}
+
+function GenericResult({ r }: { r: Record<string, unknown> }) {
+  return (
+    <div className="search-result">
+      <table>
+        <tbody>
+          {Object.entries(r)
+            .filter(([k, v]) => k !== "timeline" && k !== "rotation" && k !== "activity" && (v === null || typeof v !== "object"))
+            .map(([k, v]) => (
+              <tr key={k}>
+                <td className="muted" style={{ width: 180 }}>
+                  {label(k)}
+                </td>
+                <td>
+                  <strong>{v === null || v === undefined ? "—" : String(v)}</strong>
+                </td>
+              </tr>
+            ))}
+        </tbody>
+      </table>
+      {Array.isArray(r.timeline) && <Timeline items={r.timeline as TimelineEv[]} />}
+    </div>
   );
 }

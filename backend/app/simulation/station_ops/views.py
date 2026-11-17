@@ -12,8 +12,10 @@ a fictional km grid around the station, never real geography.
 import math
 from collections import Counter, defaultdict
 
+from app.simulation.station_ops import geo
 from app.simulation.station_ops.model import StationOpsTwin, clock, sector_of
 from app.simulation.station_ops.snapshot import _ratio
+from app.simulation.station_ops.views_v2 import build_views_v2
 
 _WINDOWS = (("10–13", 0.0, 0.35), ("13–16", 0.35, 0.65), ("16–19", 0.65, 0.9), ("19–21", 0.9, 1.01))
 _PRE_DEPART = ("picked", "staged")
@@ -48,7 +50,7 @@ def performance(twin: StationOpsTwin) -> dict:
         att = st["attempts"]
         lines.append(
             {
-                "line": f"L{ln}",
+                "line": twin.line_name(ln),
                 "status": twin.line_down(ln) or "running",
                 "inducted": st["inducted"],
                 "attempts": att,
@@ -416,30 +418,62 @@ def stage_summary(snap: dict) -> dict:
     }
 
 
+def _city(twin: StationOpsTwin) -> geo.City:
+    return geo.city_for(twin.config.station_code)
+
+
+def zone_centre(r) -> tuple[float, float]:
+    th = math.radians(r.angle)
+    return (r.radius_km * math.cos(th), r.radius_km * math.sin(th))
+
+
+def driver_paths(twin: StationOpsTwin, d) -> dict:
+    """Road paths for a driver, cached on the twin: home → station, and
+    station → zone → stop tour → station."""
+    cache = twin.__dict__.setdefault("_geo_paths", {})
+    key = (d.idx, d.route)
+    if key not in cache:
+        city = _city(twin)
+        r = twin.routes[d.route]
+        centre = zone_centre(r)
+        stops = geo.delivery_stops(f"{twin.config.seed}:{r.route_id}", centre)
+        out = city.path((0.0, 0.0), stops[0])
+        back = city.path(stops[-1], (0.0, 0.0))
+        cache[key] = {
+            "to_station": city.path(d.home, (0.0, 0.0)),
+            "out": out,
+            "tour": stops,
+            "back": back,
+        }
+    return cache[key]
+
+
+_OUT, _BACK = 0.12, 0.08
+
+
 def _driver_pos(twin: StationOpsTwin, d) -> tuple[float, float]:
     now = twin.env.now
     r = twin.routes[d.route]
-    if d.state == "off_duty" or d.state == "released":
+    if d.state in ("off_duty", "released"):
         return d.home
     if d.state == "en_route" and d.leave_at is not None:
         f = min(1.0, (now - d.leave_at) / max(1.0, d.travel_s + d.extra_travel_s))
-        return (d.home[0] * (1 - f), d.home[1] * (1 - f))
+        return geo.point_at(driver_paths(twin, d)["to_station"], f)
     if d.state == "on_road" and d.departed_at is not None:
+        p = driver_paths(twin, d)
         total = r.duration_hours * 3600
         f = (now - d.departed_at) / total
-        th = math.radians(r.angle)
-        cx, cy = r.radius_km * math.cos(th), r.radius_km * math.sin(th)
         if f >= 1.0:
             back = min(1.0, (now - d.departed_at - total) / (20 * 60))
-            return (cx * (1 - back), cy * (1 - back))
-        if f < 0.12:
-            return (cx * f / 0.12, cy * f / 0.12)
-        if f > 0.92:
-            return (cx * (1 - (f - 0.92) / 0.08 * 0.5), cy * (1 - (f - 0.92) / 0.08 * 0.5))
-        phase = (f - 0.12) / 0.8 * 2 * math.pi
-        rad = 1.6
-        return (cx + rad * math.cos(phase + th), cy + rad * math.sin(phase + th))
-    return (0.0, 0.0)
+            return geo.point_at(p["back"], back)
+        if f < _OUT:
+            return geo.point_at(p["out"], f / _OUT)
+        if f > 1 - _BACK:
+            return geo.point_at(p["back"], (f - (1 - _BACK)) / _BACK)
+        return geo.point_at(p["tour"], (f - _OUT) / (1 - _OUT - _BACK))
+    # at the station: park in the yard, one bay per route
+    k = r.idx
+    return (-1.6 + (k % 10) * 0.35, -1.0 - (k // 10) * 0.3)
 
 
 def dispatch(twin: StationOpsTwin) -> dict:
@@ -491,6 +525,10 @@ def dispatch(twin: StationOpsTwin) -> dict:
                 "x": round(x, 2),
                 "y": round(y, 2),
                 "sector": sector_of(*d.home),
+                "vsa": d.vsa_result,
+                "vsa_defect": d.vsa_defect,
+                "van_request": d.van_request,
+                "van_eta": clock(d.van_eta / 60) if d.van_eta else None,
             }
         )
     dsps = []
@@ -535,7 +573,272 @@ def dispatch(twin: StationOpsTwin) -> dict:
     return {
         "dsps": dsps,
         "drivers": drivers,
-        "map": {"zones": zones, "incidents": incidents, "extent_km": 26},
+        "map": {"zones": zones, "incidents": incidents, "extent_km": geo.EXTENT_KM},
+    }
+
+
+def driver_path(twin: StationOpsTwin, driver_id: str) -> dict | None:
+    d = next((x for x in twin.drivers if x.driver_id == driver_id), None)
+    if d is None:
+        return None
+    p = driver_paths(twin, d)
+    r = twin.routes[d.route]
+    done = 0
+    if d.departed_at is not None:
+        f = (twin.env.now - d.departed_at) / (r.duration_hours * 3600)
+        done = max(0, min(len(p["tour"]), int((f - _OUT) / (1 - _OUT - _BACK) * len(p["tour"]))))
+    return {
+        "driver_id": d.driver_id,
+        "route_id": r.route_id,
+        "state": d.state,
+        "to_station": [list(x) for x in p["to_station"]],
+        "out": [list(x) for x in p["out"]],
+        "tour": [list(x) for x in p["tour"]],
+        "back": [list(x) for x in p["back"]],
+        "stops_done_display": done,
+    }
+
+
+def city_map(twin: StationOpsTwin) -> dict:
+    out = _city(twin).to_dict()
+    out["zones"] = [
+        {"route_id": r.route_id, "x": round(zone_centre(r)[0], 2), "y": round(zone_centre(r)[1], 2)}
+        for r in twin.routes
+    ]
+    return out
+
+
+# --- yard: vehicle safety audits ---------------------------------------------------
+
+
+def yard(twin: StationOpsTwin) -> dict:
+    now = twin.env.now
+    rows = []
+    for d in twin.drivers:
+        if d.arrived_at is None and d.state != "grounded":
+            continue
+        r = twin.routes[d.route]
+        rows.append(
+            {
+                "driver_id": d.driver_id,
+                "dsp": d.dsp,
+                "route_id": r.route_id,
+                "checked_in": clock(d.arrived_at / 60) if d.arrived_at else None,
+                "state": d.state,
+                "result": d.vsa_result or ("in_progress" if d.state == "vsa" else None),
+                "defect": d.vsa_defect if d.vsa_result not in (None, "pass") else None,
+                "wait_minutes": round(d.vsa_wait_s / 60, 1),
+                "audited_at": clock(d.vsa_at / 60) if d.vsa_at else None,
+                "van_request": d.van_request,
+                "van_eta": clock(d.van_eta / 60) if d.van_eta else None,
+                "grounded_for": round((now - d.grounded_at) / 60)
+                if d.state == "grounded" and d.grounded_at
+                else None,
+            }
+        )
+    rows.sort(key=lambda x: (x["state"] != "grounded", x["checked_in"] or ""))
+    res = Counter(x["result"] for x in rows)
+    backlog = max(twin._marshal_free) - now if twin._marshal_free else 0
+    return {
+        "marshals": len(twin._marshal_free),
+        "extra_marshals": twin.extra_marshals,
+        "queue": sum(1 for d in twin.drivers if d.state == "vsa"),
+        "booked_ahead_minutes": round(max(0.0, backlog) / 60, 1),
+        "audited": sum(1 for d in twin.drivers if d.vsa_at is not None),
+        "passed": res.get("pass", 0),
+        "minor_fixed": res.get("minor_fixed", 0),
+        "grounded": sum(1 for d in twin.drivers if d.vsa_result in ("grounded", "replaced")),
+        "grounded_now": sum(1 for d in twin.drivers if d.state == "grounded"),
+        "spare_vans": dict(twin.spare_vans),
+        "rows": rows,
+    }
+
+
+# --- staging floor plan & aisle plan (live) ------------------------------------------
+
+
+def staging_floor(twin: StationOpsTwin, snap: dict) -> dict:
+    now = twin.env.now
+    rows = {x["route_id"]: x for x in snap["routes"]}
+    foreign = {
+        r.misstaged_at: r.route_id
+        for r in twin.routes
+        if r.misstaged_at is not None and r.misstage_fixed_at is None
+    }
+    locs = []
+    for r in twin.routes:
+        row = rows[r.route_id]
+        d = twin.drivers[r.driver] if r.driver is not None else None
+        risk = None
+        if r.misstaged_at and r.misstage_fixed_at is None:
+            risk = "cart_misstaged"
+        elif r.staging_location in foreign:
+            risk = "foreign_cart"
+        elif d is not None and d.state == "grounded":
+            risk = "van_grounded"
+        elif row["at_risk"] and r.staged_at is None:
+            risk = "stage_late"
+        elif r.forgotten and any(twin.pkgs[i].status == "left_behind" for i in r.packages):
+            risk = "bag_in_aisle"
+        elif r.departed_at is None and now > r.planned_depart:
+            risk = "depart_late"
+        locs.append(
+            {
+                "location": r.staging_location,
+                "row": r.staging_location[4],
+                "slot": int(r.staging_location[5:]),
+                "route_id": r.route_id,
+                "wave": r.wave + 1,
+                "dsp": r.dsp,
+                "status": r.status,
+                "carts": r.carts,
+                "carts_staged": r.carts_staged,
+                "hv_pending": r.hv_pending,
+                "stage_by": clock(r.stage_by / 60),
+                "depart": clock(r.planned_depart / 60),
+                "driver": d.driver_id if d else None,
+                "driver_state": d.state if d else None,
+                "foreign_cart": foreign.get(r.staging_location),
+                "misstaged_at": r.misstaged_at if r.misstage_fixed_at is None else None,
+                "risk": risk,
+            }
+        )
+    waves = sorted({x["wave"] for x in locs})
+    return {
+        "rows": sorted({x["row"] for x in locs}),
+        "slots": max(x["slot"] for x in locs),
+        "locations": locs,
+        "waves": [
+            {
+                "wave": w,
+                "stage_by": next(x["stage_by"] for x in locs if x["wave"] == w),
+                "routes": sum(1 for x in locs if x["wave"] == w),
+                "staged": sum(
+                    1 for x in locs if x["wave"] == w and x["status"] in ("staged", "loading")
+                ),
+                "departed": sum(1 for x in locs if x["wave"] == w and x["status"] == "departed"),
+                "at_risk": sum(1 for x in locs if x["wave"] == w and x["risk"]),
+            }
+            for w in waves
+        ],
+        "risks": Counter(x["risk"] for x in locs if x["risk"]),
+    }
+
+
+def aisle_plan(twin: StationOpsTwin) -> dict:
+    by_aisle: dict[str, list] = defaultdict(list)
+    for r in twin.routes:
+        by_aisle[r.aisle].append(r)
+    left = Counter()
+    flagged = Counter()
+    for p in twin.pkgs:
+        if p.status == "left_behind" and p.location:
+            left[p.location] += 1
+            if p.left_reason == "bag_not_loaded":
+                flagged[p.location] += 1
+    people = defaultdict(list)
+    for a in twin.assocs:
+        if a.present and a.task not in ("off_shift",) and a.location.startswith("Aisle "):
+            people[a.location[6:]].append({"login": a.login, "task": a.task, "role": a.role})
+    out = []
+    for x in twin.aisles:
+        rs = by_aisle.get(x, [])
+        out.append(
+            {
+                "aisle": x,
+                "cluster": x[0],
+                "index": int(x[1:]),
+                "level": twin.aisle_level[x],
+                "capacity": twin.aisle_capacity.get(x, 0),
+                "routes": [
+                    {"route_id": r.route_id, "status": r.status, "wave": r.wave + 1} for r in rs
+                ],
+                "picked": sum(1 for r in rs if r.picked_at is not None),
+                "people": people.get(x, []),
+                "sweep": "sweeping"
+                if x in twin.sweeping
+                else "due"
+                if twin.sweep_due.get(x, -1) > twin.swept.get(x, -1)
+                else "swept"
+                if x in twin.swept
+                else None,
+                "swept_at": clock(twin.swept[x] / 60) if x in twin.swept else None,
+                # the system only knows about bags flagged at staging; missorts
+                # are invisible until someone finds them
+                "flagged_left_behind": flagged[x],
+                "left_behind_true": left[x],
+            }
+        )
+    return {
+        "aisles": out,
+        "clusters": sorted({a["cluster"] for a in out}),
+        "sweep_log": twin.sweep_log[-40:],
+        "swept": len(twin.swept),
+        "sweep_recovered": twin.counters["sweep_staged"],
+        "cluster_transfer": twin.counters["cluster_transfer"],
+    }
+
+
+def notifications(twin: StationOpsTwin) -> dict:
+    items = twin.notifications[-200:]
+    unacked = [n for n in twin.notifications if not n["ack"]]
+    return {
+        "items": list(reversed(items)),
+        "unacked": Counter(n["audience"] for n in unacked),
+        "critical_unacked": sum(1 for n in unacked if n["severity"] == "critical"),
+    }
+
+
+def closeout_view(twin: StationOpsTwin) -> dict:
+    co = twin.closeout
+    now_min = twin.env.now / 60
+    ofd = co.known_ofd() if co.started_at is not None else None
+    need = co.needs(ofd["ofd_volume"]) if ofd else None
+    show = co.expected_show() if co.started_at is not None else None
+    return {
+        "started": co.started_at is not None,
+        "started_at": clock(co.started_at) if co.started_at is not None else None,
+        "complete": co.complete,
+        "tomorrow": co.tomorrow.isoformat(),
+        "tasks": co.tasks,
+        "gtdr": co.gtdr,
+        "truckfile": {
+            "version": co.truckfile_version,
+            "final_published_at": clock(co.final_published_at) if co.final_published_at else None,
+            "final_due": clock(co.cfg.final_truckfile_minute),
+            "trips": [
+                {
+                    "trip_id": t["trip_id"],
+                    "origin": t["origin"],
+                    "via_ferry": t["via_ferry"],
+                    "sailing": t["sailing"],
+                    "planned_arrival": clock(t["planned_arrival"]),
+                    "eta": clock(t["planned_arrival"] + t["known_delay"]),
+                    "delay_minutes": t["known_delay"],
+                    "volume": t["known_volume"],
+                    "cancelled": t["known_cancelled"],
+                    "added": t["added"],
+                    "last_checked": t["last_checked"],
+                    "after_pick_start": t["planned_arrival"] + t["known_delay"]
+                    > twin.config.cycle.pick_start_minute - 60,
+                }
+                for t in co.trips
+                if not (t["added"] and t["known_volume"] == 0)
+            ],
+            "log": co.truckfile_log,
+            "ferry_checks": co.ferry_checks[-30:],
+        },
+        "ofd": ofd,
+        "needs": need,
+        "show": show,
+        "gap": round(need["headcount"] - show["expected"], 1) if need and show else None,
+        "offers": co.offers,
+        "callouts": co.callouts,
+        "plan": co.plan,
+        "plan_history": co.plan_history,
+        "scrubs": co.scrubs,
+        "readiness": co.readiness,
+        "now": clock(now_min),
     }
 
 
@@ -784,7 +1087,7 @@ def layout(twin: StationOpsTwin, snap: dict) -> dict:
         "staging": [{"location": k, "status": v} for k, v in sorted(staging.items())],
         "doors": receive(twin, snap)["doors"],
         "lines": [
-            {"line": f"L{ln}", "status": twin.line_down(ln) or "running"}
+            {"line": twin.line_name(ln), "status": twin.line_down(ln) or "running"}
             for ln in range(1, twin.total_lines() + 1)
         ],
     }
@@ -871,6 +1174,12 @@ def build_views(twin: StationOpsTwin, snap: dict) -> dict:
         "sort_paths": sort_paths(twin),
         "devices": devices(twin),
         "events": list(twin.events)[-120:],
+        "yard": yard(twin),
+        "staging_floor": staging_floor(twin, snap),
+        "aisle_plan": aisle_plan(twin),
+        "notifications": notifications(twin),
+        "closeout": closeout_view(twin),
+        **build_views_v2(twin, snap),
     }
 
 
@@ -879,7 +1188,16 @@ def search(twin: StationOpsTwin, query: str) -> dict:
     now = twin.env.now
     if not q:
         return {"kind": "none", "results": []}
-    pkgs = [p for p in twin.pkgs if p.tracking_id == q or q in p.tracking_id][:20]
+    ids = [x for x in q.replace(",", " ").split() if x]
+    if len(ids) > 1:  # bulk package search (capped)
+        want = set(ids[:1000])
+        pkgs = [p for p in twin.pkgs if p.tracking_id in want]
+    else:
+        pkgs = [p for p in twin.pkgs if p.tracking_id == q or q in p.tracking_id][:20]
+    if not pkgs and (q.startswith("GAYLORD") or q.startswith("PALLET")):
+        conts = [c for c in twin.containers if q in c["id"].upper()][:10]
+        if conts:
+            return {"kind": "container_v2", "results": [_container_result(twin, c) for c in conts]}
     if pkgs:
         return {
             "kind": "package",
@@ -908,6 +1226,13 @@ def search(twin: StationOpsTwin, query: str) -> dict:
                         if t is not None
                     ],
                     "delivered": p.delivered if p.attempt_at and p.attempt_at <= now else None,
+                    "container": twin.containers[p.container]["id"] if p.container >= 0 else None,
+                    "planned": p.planned,
+                    "ps_state": p.ps_state,
+                    "misdivert": p.misdivert_kind,
+                    "inducted_by": p.inducted_by,
+                    "stowed_by": p.stowed_by,
+                    "line": twin.line_name(p.line) if p.line else None,
                 }
                 for p in pkgs
             ],
@@ -932,10 +1257,52 @@ def search(twin: StationOpsTwin, query: str) -> dict:
         }
     assoc = [a for a in twin.assocs if q.lower() in a.login.lower()]
     if assoc:
-        return {
-            "kind": "associate",
-            "results": [
-                x for x in associates(twin)["rows"] if x["login"] in {a.login for a in assoc}
-            ],
-        }
+        rows = {x["login"]: x for x in associates(twin)["rows"]}
+        out = []
+        for a in assoc[:10]:
+            base = rows.get(a.login, {"login": a.login})
+            hist = list(a.history)
+            base = {
+                **base,
+                "activity": [
+                    {
+                        "clock": clock(m),
+                        "role": r,
+                        "until": clock(hist[k + 1][0]) if k + 1 < len(hist) else None,
+                    }
+                    for k, (m, r) in enumerate(hist)
+                ],
+                "inducted": sum(1 for p in twin.pkgs if p.inducted_by == a.login),
+                "stowed": sum(1 for p in twin.pkgs if p.stowed_by == a.login),
+                "fsaf": a.fsaf,
+                "spot_checks": a.spot_checks,
+            }
+            out.append(base)
+        return {"kind": "associate", "results": out}
     return {"kind": "none", "results": []}
+
+
+def _container_result(twin: StationOpsTwin, c: dict) -> dict:
+    pk = [twin.pkgs[i] for i in c["pkgs"]]
+    ind = sorted(p.inducted_at for p in pk if p.inducted_at is not None)
+    sto = sorted(p.stowed_at for p in pk if p.stowed_at is not None)
+    trip = twin.config.linehauls[c["trip"]]
+    tl = [
+        ("unloaded", c["unloaded_at"]),
+        ("first inducted", ind[0] if ind else None),
+        ("last inducted", ind[-1] if ind else None),
+        ("first stowed", sto[0] if sto else None),
+        ("last stowed", sto[-1] if sto else None),
+    ]
+    return {
+        "id": c["id"],
+        "type": c["type"],
+        "linehaul": trip.trip_id,
+        "origin": trip.origin,
+        "total": len(pk),
+        "pending_induct": sum(1 for p in pk if p.status in ("pending_receive", "pending_induct")),
+        "inducted": len(ind),
+        "stowed": len(sto),
+        "clusters": dict(Counter(twin.routes[p.route].cluster for p in pk)),
+        "timeline": [{"event": e, "clock": clock(t / 60)} for e, t in tl if t is not None],
+    }

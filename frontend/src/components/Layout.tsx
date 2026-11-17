@@ -1,8 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
-import { useStation } from "../api/runtime";
 import { ChatLauncher } from "./ChatPanel";
+import { CycleBanner } from "./CycleBanner";
+import { NotificationBell } from "./Notifications";
 import { SessionBar } from "./SessionBar";
 import "./live.css";
 import { api } from "../api/client";
@@ -39,6 +40,10 @@ const ICON = {
   calendar: "M4 6h16v15H4zM4 10h16M8 3v4M16 3v4",
   chat: "M4 5h16v11H8l-4 4z",
   layout: "M3 3h18v18H3zM3 9h18M9 9v12",
+  doc: "M6 3h9l4 4v14H6zM14 3v5h5M9 13h7M9 17h7",
+  rotate: "M20 11a8 8 0 0 0-14.7-4.3L3 9M3 4v5h5M4 13a8 8 0 0 0 14.7 4.3L21 15M21 20v-5h-5",
+  sliders: "M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0M14 4v4M8 10v4M16 16v4",
+  moon: "M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z",
 };
 
 const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
@@ -46,15 +51,14 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
     title: "Operate",
     items: [
       { to: "/command", label: "Command Center", icon: ICON.command },
-      { to: "/", label: "Station Overview", icon: ICON.grid },
       { to: "/work-items", label: "Work Items", icon: ICON.list },
+      { to: "/plan-vs-actual", label: "Plan vs. actual", icon: ICON.chart },
     ],
   },
   {
     title: "Inbound",
     items: [
       { to: "/inbound", label: "Receive & Linehauls", icon: ICON.truck },
-      { to: "/truckfile", label: "Truckfile & Ferries", icon: ICON.ferry },
     ],
   },
   {
@@ -80,10 +84,18 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
     ],
   },
   {
+    title: "After dispatch",
+    items: [
+      { to: "/closeout", label: "Close-out & Tomorrow", icon: ICON.moon },
+      { to: "/report", label: "Shift report", icon: ICON.doc },
+    ],
+  },
+  {
     title: "People",
     items: [
       { to: "/associates", label: "Associates", icon: ICON.users },
       { to: "/labor", label: "Shift Plan", icon: ICON.calendar },
+      { to: "/rotation", label: "Shift rotation", icon: ICON.rotate },
     ],
   },
   {
@@ -98,10 +110,10 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
     title: "Analyze & govern",
     items: [
       { to: "/station", label: "Station & Resources", icon: ICON.layout },
-      { to: "/live", label: "Cycle-1 Live Twin", icon: ICON.pulse },
       { to: "/simulation", label: "Scenario Runner", icon: ICON.cube },
       { to: "/rl", label: "Policy Comparison", icon: ICON.chart },
       { to: "/decisions", label: "Decisions & Audit", icon: ICON.shield },
+      { to: "/settings", label: "Settings", icon: ICON.sliders },
     ],
   },
 ];
@@ -212,18 +224,6 @@ function Clock() {
   );
 }
 
-function CycleAlert() {
-  const q = useStation();
-  const alert = q.data?.snapshot.alerts.find((a) => a.area === "cycle") ?? q.data?.snapshot.alerts.find((a) => a.severity === "critical");
-  if (!alert) return null;
-  return (
-    <div className="global-alert" role="status" data-testid="global-alert">
-      <span aria-hidden>⚠</span>
-      {alert.message}
-    </div>
-  );
-}
-
 function GlobalSearch() {
   const navigate = useNavigate();
   const [q, setQ] = useState("");
@@ -294,11 +294,12 @@ export function Layout({ children }: { children: ReactNode }) {
           <HealthIndicator />
           <div className="topbar__spacer" />
           <GlobalSearch />
+          <NotificationBell />
           <Clock />
           <ThemeToggle />
         </header>
         <SessionBar />
-        <CycleAlert />
+        <CycleBanner />
         <main className="layout__content">{children}</main>
         <ChatLauncher />
       </div>

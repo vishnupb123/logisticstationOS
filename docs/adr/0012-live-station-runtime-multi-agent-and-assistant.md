@@ -69,3 +69,19 @@ ADR-0011's design gave each SSE stream its own private twin. No two pages could 
 
 - Multi-user or remote use, which would need auth, per-user sessions and a push protocol.
 - A real operational feed of any kind, which would need a new ADR before anything outside the twin could be touched.
+
+## Amendment (2026-11-12): after-dispatch close-out, floor/yard exceptions, adaptive wake-up
+
+Within this ADR's decision (same runtime, same autonomy boundary). The day no longer ends at the last departure:
+- `closeout.py` models the supervisor's and manager's evening as two task queues, plus seeded sudden events: a late trailer, a delayed pallet truck, ferry revisions after the final truckfile (learned only by a ferry check), and call-outs.
+- A sixth specialist, the **Shift Planning Agent**, reacts with reflexes: re-check ferries, re-plan when the truckfile moves, top up VET early (acceptance falls with later offers), and pre-draft GTDRs.
+- Floor and yard events have pre-drawn per-route/per-van behaviour:
+  - wrong staging scans;
+  - forgotten bags, with the sweep and cluster transfer;
+  - the VSA, with grounded vans and replacements.
+
+  Belief futures pin what has already been observed and resample the rest.
+- Sudden events set `twin.urgent`, which wakes the agents immediately instead of at the next 15-minute cycle.
+- Notifications are records in the twin. Nothing real is contacted.
+
+Measured (seed 2, normal day): observe OTD 92.5% / DEA 99.3% → autopilot 97.5% / 99.8%. On a peak day (seed 5), the default manager schedule leaves tomorrow 5.8 people short; the planning agent's early VET cuts that to 0.8.

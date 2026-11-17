@@ -28,9 +28,16 @@ from app.simulation.station_ops.config import StationOpsConfig
 from app.simulation.station_ops.model import Intervention, StationOpsTwin
 from app.simulation.station_ops.snapshot import run_station_day
 
-SCORE_WEIGHTS = {"dea_pp": 1.0, "otd_pp": 0.5, "timely_staged_pp": 0.25, "labor_hour": -0.02}
+SCORE_WEIGHTS = {
+    "dea_pp": 1.0,
+    "otd_pp": 0.5,
+    "timely_staged_pp": 0.25,
+    "labor_hour": -0.02,
+    # v2: Est. Stow WIP compliance (documented metric), proposed weight
+    "wip_compliance_pp": 0.02,
+}
 ROBUSTNESS_LAMBDA = 0.5
-SCORE_VERSION = "2026-11-09.1"
+SCORE_VERSION = "2026-11-13.1"
 
 
 class Outcome(BaseModel):
@@ -40,6 +47,7 @@ class Outcome(BaseModel):
     rolled_over: int
     left_behind: int
     not_attempted: int
+    wip_compliance: float = 0.0
 
 
 class Evaluation(BaseModel):
@@ -50,6 +58,7 @@ class Evaluation(BaseModel):
     delta_dea_pp: float
     delta_otd_pp: float
     delta_timely_staged_pp: float
+    delta_wip_compliance_pp: float = 0.0
     score: float
     score_stdev: float = 0.0
     futures: int = 1
@@ -66,13 +75,21 @@ def _outcome(config: StationOpsConfig, interventions: list[Intervention]) -> Out
         rolled_over=s.package_status["rolled_over"],
         left_behind=s.package_status["left_behind"],
         not_attempted=s.delivery["not_attempted"],
+        wip_compliance=m["stow_wip_compliance"].value or 0.0,
     )
 
 
-def score(delta_dea_pp: float, delta_otd_pp: float, delta_ts_pp: float, labor: float) -> float:
+def score(
+    delta_dea_pp: float,
+    delta_otd_pp: float,
+    delta_ts_pp: float,
+    labor: float,
+    delta_wip_pp: float = 0.0,
+) -> float:
     w = SCORE_WEIGHTS
     return round(
-        w["dea_pp"] * delta_dea_pp
+        w["wip_compliance_pp"] * delta_wip_pp
+        + w["dea_pp"] * delta_dea_pp
         + w["otd_pp"] * delta_otd_pp
         + w["timely_staged_pp"] * delta_ts_pp
         + w["labor_hour"] * labor,
@@ -126,12 +143,27 @@ def belief_configs(twin: StationOpsTwin, k: int) -> list[StationOpsConfig]:
                     "recoverable_s": d.recoverable_s,
                     "no_show": False,
                 }
+                if d.vsa_at is not None:  # audited: the outcome is known
+                    overrides[d.route] |= {
+                        "vsa_u": d.vsa_u,
+                        "vsa_fix_s": d.vsa_fix_s,
+                        "vsa_defect": d.vsa_defect,
+                    }
             elif overdue:
                 overrides[d.route] = {
                     "no_show": d.no_show or d.notified_at is not None,
                     "late_s": max(d.late_s, twin.env.now - twin.planned_leave(d)),
                 }
         cfg.driver_overrides = overrides
+        # floor behaviour already observed is pinned; the rest is resampled
+        ro: dict[int, dict] = {}
+        for r in twin.routes:
+            if r.picked_at is not None:
+                ro[r.idx] = {"forget_bag": r.forgotten > 0}
+            if r.staged_at is not None or r.misstaged_since is not None:
+                ro.setdefault(r.idx, {})["misstage"] = r.misstaged_since is not None
+                ro[r.idx]["misstage_notice_s"] = r.misstage_notice_s
+        cfg.route_overrides = ro
         out.append(cfg)
     return out
 
@@ -168,17 +200,19 @@ def evaluate_prepared(
     baselines = [_outcome(cfg, applied) for cfg in configs]
 
     def run(c: Candidate) -> Evaluation:
-        scores, outs, d_dea, d_otd, d_ts = [], [], [], [], []
+        scores, outs, d_dea, d_otd, d_ts, d_wip = [], [], [], [], [], []
         for cfg, base in zip(configs, baselines, strict=True):
             o = _outcome(cfg, [*applied, *c.interventions])
             dd = (o.dea - base.dea) * 100
             do = (o.otd - base.otd) * 100
             dt = (o.timely_staged - base.timely_staged) * 100
+            dw = (o.wip_compliance - base.wip_compliance) * 100
+            d_wip.append(dw)
             outs.append(o)
             d_dea.append(dd)
             d_otd.append(do)
             d_ts.append(dt)
-            scores.append(score(dd, do, dt, c.labor_hours))
+            scores.append(score(dd, do, dt, c.labor_hours, dw))
         mean = statistics.fmean(scores)
         sd = statistics.pstdev(scores) if len(scores) > 1 else 0.0
         return Evaluation(
@@ -189,6 +223,7 @@ def evaluate_prepared(
             delta_dea_pp=round(statistics.fmean(d_dea), 3),
             delta_otd_pp=round(statistics.fmean(d_otd), 3),
             delta_timely_staged_pp=round(statistics.fmean(d_ts), 3),
+            delta_wip_compliance_pp=round(statistics.fmean(d_wip), 3),
             score=round(mean - ROBUSTNESS_LAMBDA * sd, 3),
             score_stdev=round(sd, 3),
             futures=len(configs),

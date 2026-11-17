@@ -7,6 +7,7 @@ import { type Column, DataTable } from "../../components/DataTable";
 import { DataSourceBadge } from "../../components/DataSourceBadge";
 import { PageHeader } from "../../components/PageHeader";
 import { ActButton, LiveGate, Pill, Stat, StatRow } from "../../components/live";
+import { AislePlan, StagingFloor } from "../../components/FloorPlan";
 import "../../components/RouteGrid.css";
 
 const SLOT: Record<RouteRow["status"], number> = {
@@ -142,7 +143,7 @@ export function OutboundOverview() {
 }
 
 export function Pick() {
-  const [view, setView] = useState<"route" | "grid">("route");
+  const [view, setView] = useState<"route" | "grid" | "aisles">("route");
   const [highSpr, setHighSpr] = useState(false);
   const [atRisk, setAtRisk] = useState(false);
   return (
@@ -188,6 +189,9 @@ export function Pick() {
                 <div className="seg">
                   <button aria-pressed={view === "route"} onClick={() => setView("route")}>Route view</button>
                   <button aria-pressed={view === "grid"} onClick={() => setView("grid")}>Layout grid view</button>
+                  <button aria-pressed={view === "aisles"} onClick={() => setView("aisles")} data-testid="aisle-plan-toggle">
+                    Aisle plan (live)
+                  </button>
                 </div>
                 <label style={{ fontSize: 12 }}>
                   <input type="checkbox" checked={highSpr} onChange={(e) => setHighSpr(e.target.checked)} /> High SPR (&gt;270)
@@ -202,6 +206,10 @@ export function Pick() {
               {view === "route" ? (
                 <Card title="Routes">
                   <DataTable testId="pick-table" columns={routeCols([actions])} rows={rows} rowKey={(r) => r.route_id} rowClass={(r) => (r.at_risk ? "row-risk" : undefined)} maxHeight={600} />
+                </Card>
+              ) : view === "aisles" ? (
+                <Card title="Aisle plan — live pick, sweep and left-behind">
+                  <AislePlan s={s} />
                 </Card>
               ) : (
                 <Card title="Staging layout grid">
@@ -245,6 +253,7 @@ function StagingGrid({ s }: { s: LiveState }) {
 }
 
 export function Stage() {
+  const [view, setView] = useState<"floor" | "table">("floor");
   return (
     <div>
       <PageHeader eyebrow="Outbound" title="Stage" badges={<DataSourceBadge kind="simulated" />}>
@@ -262,7 +271,21 @@ export function Stage() {
                 <Stat label="Partially staged" value={st.partially_staged} />
                 <Stat label="Staged" value={st.staged} />
                 <Stat label="Departed" value={st.departed} />
+                <Stat label="Floor exceptions" value={Object.values(s.views.staging_floor.risks).reduce((a, b) => a + b, 0)} sub="misstaged · grounded · late" />
               </StatRow>
+              <div className="seg">
+                <button aria-pressed={view === "floor"} onClick={() => setView("floor")} data-testid="floor-plan-toggle">
+                  Floor plan (live)
+                </button>
+                <button aria-pressed={view === "table"} onClick={() => setView("table")}>
+                  Table
+                </button>
+              </div>
+              {view === "floor" ? (
+                <Card title="Staging area floor plan">
+                  <StagingFloor s={s} />
+                </Card>
+              ) : (
               <Card title="Routes">
                 <DataTable
                   testId="stage-table"
@@ -282,6 +305,7 @@ export function Stage() {
                   maxHeight={620}
                 />
               </Card>
+              )}
             </div>
           );
         }}

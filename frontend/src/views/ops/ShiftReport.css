@@ -1,0 +1,158 @@
+.rpt {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow: hidden;
+}
+
+.rpt-watermark {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 0;
+  font-size: clamp(28px, 7vw, 72px);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  opacity: 0.13;
+  transform: rotate(-24deg);
+  text-align: center;
+  white-space: normal;
+}
+
+.rpt > *:not(.rpt-watermark) {
+  position: relative;
+  z-index: 1;
+}
+
+.rpt-banner {
+  font-weight: 700;
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px dashed color-mix(in srgb, var(--series-7) 60%, transparent);
+  background: color-mix(in srgb, var(--series-7) 8%, var(--surface-1));
+}
+
+.rpt-meta {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.rpt-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+}
+
+.rpt-kpi {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--surface-1);
+}
+
+.rpt-kpi__label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.rpt-kpi__value {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.rpt-kpi__target {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.rpt-two {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 16px;
+}
+
+.rpt-headline {
+  margin: 0 0 8px;
+  font-weight: 600;
+}
+
+.rpt-section h3,
+.rpt-h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin: 10px 0 4px;
+}
+
+.rpt-section ul,
+.rpt-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.rpt-kv {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.rpt-kv dt {
+  color: var(--text-secondary);
+}
+
+.rpt-kv dd {
+  margin: 0;
+  text-align: right;
+}
+
+.rpt-small {
+  font-size: 12px;
+}
+
+.rpt-actions {
+  display: flex;
+  gap: 6px;
+}
+
+@media print {
+  .layout__sidebar,
+  .topbar,
+  .sbar,
+  .cbanner,
+  .chat-fab,
+  .rpt-actions {
+    display: none !important;
+  }
+
+  .layout__content {
+    padding: 0;
+    max-width: none;
+  }
+
+  body.presenter-mode .layout__content {
+    zoom: 1;
+  }
+
+  .rpt-watermark {
+    position: fixed;
+    opacity: 0.1;
+    color: #000;
+  }
+
+  .rpt .card {
+    break-inside: avoid;
+  }
+}

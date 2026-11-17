@@ -21,6 +21,7 @@ pre-drawn at construction from seeded RNGs, independent of process order.
 
 import math
 import random
+import zlib
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Literal
@@ -64,7 +65,33 @@ ActionKind = Literal[
     "notify_swipe_finish",
     "start_scrub",
     "inject_disruption",
+    "restage_cart",
+    "direct_sweep",
+    "request_replacement_van",
+    "add_yard_marshal",
+    "check_ferry",
+    "draft_gtdr",
+    "replan_next_day",
+    "offer_vet",
+    "offer_vto",
+    # v2 (HANDOFF_V2 E2/E3/E4/E5/E7/E8)
+    "force_induct",
+    "change_cycle",
+    "enable_cycle",
+    "rebalance_finger",
+    "approve_damaged",
+    "watch_trip",
+    "post_opportunity",
+    "close_window",
+    "rerun_rotation",
 ]
+
+
+def _u(*keys) -> float:
+    """Deterministic uniform [0, 1) from keys (independent of draw order)."""
+    h = zlib.crc32(":".join(map(str, keys)).encode())
+    h = (h * 2654435761) & 0xFFFFFFFF
+    return h / 4294967296
 
 
 class Intervention(BaseModel):
@@ -116,6 +143,29 @@ class _Pkg:
     attempted: bool | None = None
     delivered: bool | None = None
     custody_scans: int = 0
+    #: Why a package was left on the floor (missort / bag_not_loaded).
+    left_reason: str | None = None
+    #: How a left-behind package was recovered (sweep_staged / cluster_transfer).
+    recovered: str | None = None
+    # --- v2 ---------------------------------------------------------------------
+    #: In the upstream container plan (planned) vs. not (unplanned).
+    planned: bool = True
+    #: CYCLE_1 / High_Value / UNPLANNED (until assigned at induct by the dynamic plan).
+    cycle: str = "CYCLE_1"
+    container: int = -1
+    conveyable: bool = True
+    missed_induct: bool = False
+    stower_err: bool = False
+    spot_u: float = 1.0
+    stop_u: float = 1.0
+    buffer_s: float = 900.0
+    #: Problem-solve state machine (damaged / misdivert / missed induct).
+    ps_state: str | None = None
+    misdivert_kind: str | None = None
+    finger: str | None = None
+    inducted_by: str | None = None
+    stowed_by: str | None = None
+    approval_at: float | None = None
 
 
 @dataclass
@@ -128,6 +178,7 @@ class _Assoc:
     present: bool
     shift_start: float
     line: int | None = None
+    home_line: int | None = None
     vet: bool = False
     task: str = "off_shift"
     task_ref: str | None = None
@@ -140,6 +191,14 @@ class _Assoc:
     idle_since: float | None = None
     longest_idle_s: float = 0.0
     history: list = field(default_factory=list)
+    # --- v2 per-path performance ---------------------------------------------------
+    fsaf: int = 0
+    stow_to_ps: int = 0
+    spot_checks: int = 0
+    spot_defects: int = 0
+    picklists: int = 0
+    picklist_id: str | None = None
+    path_hours: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -178,6 +237,17 @@ class _Route:
     failed: int = 0
     stops: int = 0
     moved_waves: int = 0
+    # floor exceptions (pre-drawn; revealed only when they happen)
+    misstage: bool = False
+    misstage_notice_s: float = 0.0
+    forget_bag: bool = False
+    misstaged_at: str | None = None
+    misstaged_by: str | None = None
+    misstaged_since: float | None = None
+    misstage_fixed_at: float | None = None
+    restaging: bool = False
+    restage_ev: object = None
+    forgotten: int = 0
 
 
 @dataclass
@@ -205,6 +275,17 @@ class _Driver:
     extra_travel_s: float = 0.0
     early_s: float = 0.0
     wake: object = None
+    # vehicle safety audit (VSA) at check-in — pre-drawn per van
+    vsa_u: float = 1.0
+    vsa_fix_s: float = 0.0
+    vsa_defect: str | None = None
+    vsa_result: str | None = None
+    vsa_at: float | None = None
+    vsa_wait_s: float = 0.0
+    grounded_at: float | None = None
+    van_request: str | None = None
+    van_eta: float | None = None
+    van_event: object = None
 
 
 @dataclass
@@ -271,6 +352,8 @@ def clock(minute: float) -> str:
     m = int(round(minute))
     day, m = divmod(m, 1440)
     label = f"{m // 60:02d}:{m % 60:02d}"
+    if day < 0:
+        return f"D{day} {label}"
     return label if day == 0 else f"{label}+{day}d"
 
 
@@ -317,12 +400,48 @@ class StationOpsTwin:
             for o in c.induct.outages
         ]
         self.extra_lines = 0
+        self.notifications: list[dict] = []
+        self._nid = 0
+        #: Set when something sudden happens; the runtime wakes the agents early.
+        self.urgent = False
+        self.swept: dict[str, float] = {}
+        #: aisle -> last time a route there finished picking (sweep is due after it)
+        self.sweep_due: dict[str, float] = {}
+        self.sweeping: set[str] = set()
+        self.sweep_priority: list[str] = []
+        self.sweep_passes: Counter = Counter()
+        self.sweep_log: list[dict] = []
+        self._marshal_free = [0.0] * c.dispatch.yard_marshals
+        self.extra_marshals = 0
+        self.spare_vans = {d.code: d.spare_vans for d in c.dispatch.dsps}
+        self.departures_done_at: float | None = None
+        # --- v2 state -------------------------------------------------------------
+        #: per induct line: last scan time, lost seconds (documented belt-gap rule), stops
+        self._last_scan: dict[int, float] = {}
+        self.gap_lost_s: Counter = Counter()
+        self.gap_stops: Counter = Counter()
+        self._line_scan_times: dict[int, list[float]] = defaultdict(list)
+        self.n_buffered = 0
+        self.finger_stats: dict[str, Counter] = defaultdict(Counter)
+        self.finger_rebalanced: dict[str, float] = {}
+        self.force_until: float | None = None
+        self.next_cycle_until: float | None = None
+        self.cycle_changes: list[dict] = []
+        self.network_missorts: list[dict] = []
+        self.wip_intervals: list[dict] = []
+        self.watch: set[str] = set()
+        self.approve_fast = False
+        from app.simulation.station_ops.work_items import WorkItemStore
+
+        self.work_items = WorkItemStore(self)
 
         self._build_routes()
         self._build_packages()
         self._build_associates()
         self._build_drivers()
         self._build_backlog()
+        self._build_floor()
+        self._build_containers()
         self.trips = [_Trip(i) for i in range(len(c.linehauls))]
         self.aisle_level: Counter = Counter()
         self.aisle_capacity = self._aisle_capacity()
@@ -331,6 +450,7 @@ class StationOpsTwin:
         self.stow_q = _Queue(self.env)
         self.problem_q = _Queue(self.env)
         self.hv_q = _Queue(self.env)
+        self.noncon_q = _Queue(self.env)
         self.yard: list[int] = []
         self.doors_free = c.doors
         self._free_doors = list(range(1, c.doors + 1))
@@ -345,9 +465,15 @@ class StationOpsTwin:
         for d in list(self.drivers):
             self.env.process(self._driver_proc(d))
         self.env.process(self._cycle_process())
+        self.env.process(self._drain_end())
         self.env.process(self._sampler())
+        from app.simulation.station_ops.closeout import Closeout
+
+        self.closeout = Closeout(self)
         for p in self._carryover_ids:
             self.env.process(self._carryover_arrival(p))
+        for item in c.carried_work_items:
+            self.work_items.carry(item)
         for dis in c.disruptions:
             self.env.process(self._scheduled(self._disruption_iv(dis)))
         for iv in interventions or []:
@@ -411,9 +537,93 @@ class StationOpsTwin:
             stow_mult=rng.lognormvariate(-0.08, 0.4),
             carryover=carryover,
         )
+        key = (self.config.seed, pkg.tracking_id)
+        ic, sc = self.config.induct, self.config.stow
+        pkg.conveyable = _u("conv", *key) < ic.conveyable_share
+        pkg.missed_induct = _u("missed", *key) < ic.missed_induct_rate
+        pkg.stower_err = _u("stower", *key) < sc.stower_error_rate
+        pkg.spot_u = _u("spot", *key)
+        pkg.stop_u = _u("stop", *key)
+        lo, hi = self.config.sort.stow_buffer_minutes
+        pkg.buffer_s = (lo + (hi - lo) * _u("buf", *key)) * 60
+        if trip >= 0:
+            pkg.planned = _u("plan", *key) >= self.config.linehauls[trip].unplanned_share
+        else:
+            pkg.planned = carryover
+        if manifested is False and not carryover:
+            pkg.planned = False
+        pkg.cycle = (
+            (self.config.cycle.high_value_cycle if pkg.hv else self.config.cycle.name)
+            if pkg.planned
+            else "UNPLANNED"
+        )
         self.pkgs.append(pkg)
         self.routes[pkg.route].packages.append(pkg.idx)
         return pkg
+
+    def _build_containers(self) -> None:
+        """Gaylords and pallets per linehaul (synthetic ids), unloaded and
+        inducted container by container."""
+        rng = random.Random(f"containers:{self.config.seed}")
+        self.containers: list[dict] = []
+        self.trip_containers: list[list[int]] = []
+        for t_idx, ids in enumerate(self.trip_pkgs):
+            mine: list[int] = []
+            k = 0
+            while k < len(ids):
+                kind = "GAYLORD" if rng.random() < 0.72 else "PALLET"
+                size = rng.randint(250, 450) if kind == "GAYLORD" else rng.randint(90, 150)
+                chunk = ids[k : k + size]
+                cid = len(self.containers)
+                self.containers.append(
+                    {
+                        "id": f"{kind}_{rng_hex(rng, 3)}",
+                        "type": kind,
+                        "trip": t_idx,
+                        "pkgs": chunk,
+                        "unloaded_at": None,
+                    }
+                )
+                for i in chunk:
+                    self.pkgs[i].container = cid
+                mine.append(cid)
+                k += size
+            self.trip_containers.append(mine)
+
+    # --- break schedule / belt run time (documented formula) ---------------------
+
+    def in_break(self, t: float | None = None) -> tuple[float, str] | None:
+        t = self.env.now if t is None else t
+        for b in self.config.settings.breaks:
+            if b.start_minute * 60 <= t < (b.start_minute + b.minutes) * 60:
+                return (b.start_minute + b.minutes) * 60, b.label
+        return None
+
+    def belt_run_minutes(self, start: float, end: float) -> float:
+        """Belt run time in [start, end] minutes: sort window minus fast start,
+        breaks and lunch (documented: sort end − sort start − (fast start +
+        breaks + lunch))."""
+        st = self.config.settings
+        s0 = self.config.induct.start_minute
+        start = max(start, s0)
+        if end <= start:
+            return 0.0
+        run = end - start
+        fast_end = s0 + st.fast_start_minutes
+        run -= max(0.0, min(end, fast_end) - start)
+        for b in st.breaks:
+            run -= max(0.0, min(end, b.start_minute + b.minutes) - max(start, b.start_minute))
+        return max(0.0, run)
+
+    def is_automated(self, line: int) -> bool:
+        return 1 <= line <= self.config.induct.automated_lines
+
+    def line_rate(self, line: int) -> float:
+        ic = self.config.induct
+        return ic.automated_rate_pph if self.is_automated(line) else ic.rate_pph_per_line
+
+    def line_name(self, line: int) -> str:
+        return f"AUTO-{line}" if self.is_automated(line) else f"L{line}"
 
     def _build_packages(self) -> None:
         c = self.config
@@ -458,7 +668,7 @@ class StationOpsTwin:
                 shift_start=shift,
             )
             if role == "induct":
-                a.line = line
+                a.line = a.home_line = line
                 line += 1
             self.assocs.append(a)
         # an absent inductor's line is covered by a present stower
@@ -467,6 +677,7 @@ class StationOpsTwin:
                 sub = next((b for b in self.assocs if b.role == "stow" and b.present), None)
                 if sub:
                     sub.role, sub.home_role, sub.line = "induct", "induct", a.line
+                    sub.home_line = a.line
                 a.line = None
         self._flex_rng = random.Random(f"flex:{c.seed}")
 
@@ -474,6 +685,7 @@ class StationOpsTwin:
         c, d = self.config, self.config.dispatch
         rng = random.Random(f"drivers:{c.driver_seed or c.seed}")
         late_rate = {x.code: x.late_rate for x in d.dsps}
+        vrng = random.Random(f"vsa:{c.driver_seed or c.seed}")
         self.drivers: list[_Driver] = []
         for r in self.routes:
             ang = math.radians(rng.uniform(0, 360))
@@ -494,11 +706,39 @@ class StationOpsTwin:
                 no_show=rng.random() < 0.012,
                 forget_swipe=rng.random() < d.swipe_forget_rate,
             )
+            self._draw_vsa(drv, vrng)
             for key, value in c.driver_overrides.get(r.idx, {}).items():
                 setattr(drv, key, value)
             r.driver = drv.idx
             r.stops = math.ceil(len(r.packages) / 1.15) if r.packages else 0
             self.drivers.append(drv)
+
+    _MINOR = ("tyre pressure low", "wiper blade torn", "mirror loose", "washer fluid empty")
+    _CRITICAL = ("brake warning light", "tyre sidewall damage", "windscreen crack", "fluid leak")
+
+    def _draw_vsa(self, drv: "_Driver", rng: random.Random) -> None:
+        drv.vsa_u = rng.random()
+        drv.vsa_fix_s = rng.uniform(5, 14) * 60
+        d = self.config.dispatch
+        if drv.vsa_u < d.vsa_ground_rate:
+            drv.vsa_defect = rng.choice(self._CRITICAL)
+        elif drv.vsa_u < d.vsa_ground_rate + d.vsa_minor_rate:
+            drv.vsa_defect = rng.choice(self._MINOR)
+        else:
+            rng.random()
+
+    def _build_floor(self) -> None:
+        """Pre-draws per-route floor behaviour: a cart scanned into the wrong
+        staging location, a bag left in the aisle. Unknown until it happens."""
+        c, o = self.config, self.config.outbound
+        rng = random.Random(f"floor:{c.driver_seed or c.seed}")
+        lo, hi = o.misstage_notice_minutes
+        for r in self.routes:
+            r.misstage = rng.random() < o.misstage_rate
+            r.misstage_notice_s = rng.uniform(lo, hi) * 60
+            r.forget_bag = rng.random() < o.bag_forget_rate
+            for key, value in c.route_overrides.get(r.idx, {}).items():
+                setattr(r, key, value)
 
     def _build_backlog(self) -> None:
         b = self.config.backlog
@@ -535,6 +775,53 @@ class StationOpsTwin:
                 **data,
             }
         )
+
+    def notify(
+        self, audience: str, kind: str, severity: str, title: str, message: str, **refs
+    ) -> dict:
+        """A message to the supervisor / manager / a DSP / a driver. In the
+        twin this is a record shown in the UI — nobody real is contacted."""
+        self._nid += 1
+        n = {
+            "id": self._nid,
+            "minute": round(self.env.now / 60, 2),
+            "clock": clock(self.env.now / 60),
+            "audience": audience,
+            "kind": kind,
+            "severity": severity,
+            "title": title,
+            "message": message,
+            "ack": False,
+            "acked_at": None,
+            **refs,
+        }
+        from app.simulation.station_ops.work_items import KIND_MAP
+
+        if audience in ("supervisor", "manager") and (
+            severity in ("warning", "critical") or kind in KIND_MAP
+        ):
+            ref = (
+                refs.get("route_id")
+                or refs.get("aisle")
+                or refs.get("driver_id")
+                or refs.get("ref")
+            )
+            wi = self.work_items.add(
+                kind=kind,
+                title=title,
+                owner=audience,
+                started_by="system",
+                ref=ref,
+                priority=1 if severity == "critical" else None,
+                source_ref={"notification": self._nid},
+            )
+            n["work_item"] = wi["id"]
+        self.notifications.append(n)
+        if len(self.notifications) > 600:
+            self.notifications = self.notifications[-500:]
+        if severity in ("critical", "warning") and audience in ("supervisor", "manager"):
+            self.urgent = True
+        return n
 
     def line_down(self, line: int, at: float | None = None) -> str | None:
         t = self.env.now if at is None else at
@@ -593,9 +880,11 @@ class StationOpsTwin:
         if plan.cancelled:
             trip.status = "cancelled"
             return
-        yield self.env.timeout(max(0.0, (plan.planned_arrival_minute + plan.delay_minutes) * 60))
+        arrive = (plan.planned_arrival_minute + plan.delay_minutes) * 60
+        yield self.env.timeout(max(0.0, arrive))
         trip.status = "in_yard"
-        trip.yard_at = self.env.now
+        # trailers that landed the evening before keep their real arrival time
+        trip.yard_at = arrive if arrive < 0 else self.env.now
         self.yard.append(t)
         self.log("inbound", f"{plan.trip_id} ({plan.origin}) arrived in yard")
         if not self._door_wake.triggered:
@@ -607,6 +896,9 @@ class StationOpsTwin:
         return (-self.trips[t].priority, not late, self.trips[t].yard_at, t)
 
     def _dock_process(self):
+        open_at = (self.config.induct.start_minute - self.config.unload_lead_minutes) * 60
+        if self.env.now < open_at:
+            yield self.env.timeout(open_at - self.env.now)
         while True:
             while self.yard and self.doors_free > 0:
                 t = min(self.yard, key=self._yard_key)
@@ -622,13 +914,29 @@ class StationOpsTwin:
         trip.status = "unloading"
         trip.arrived_at = self.env.now
         trip.sequence = sum(1 for x in self.trips if x.arrived_at is not None)
-        ids = self.trip_pkgs[t]
-        unload_s = plan.volume / 1000 * self.config.unload_minutes_per_1000 * 60
-        chunks = 4
-        for k in range(chunks):
-            yield self.env.timeout(unload_s / chunks)
-            for idx in ids[k * len(ids) // chunks : (k + 1) * len(ids) // chunks]:
+        per_pkg = self.config.unload_minutes_per_1000 * 60 / 1000
+        sc = self.config.sort
+        for cid in self.trip_containers[t]:
+            cont = self.containers[cid]
+            yield self.env.timeout(len(cont["pkgs"]) * per_pkg)
+            cont["unloaded_at"] = self.env.now
+            for idx in cont["pkgs"]:
                 self._receive(idx, hi=self.priority_late and plan.delay_minutes > 0)
+            # network missorts arrive mixed into the container (not our packages)
+            n = int(len(cont["pkgs"]) * sc.network_missort_rate + _u("nm", self.config.seed, cid))
+            for k in range(n):
+                rec = {
+                    "id": f"NM-{cid:04d}{k}",
+                    "reason": "wrong_station" if _u("nmr", cid, k) < 0.7 else "wrong_carrier",
+                    "trip": plan.trip_id,
+                    "container": cont["id"],
+                    "status": "pending_ps",
+                    "sidelined_at": self.env.now,
+                    "replanned_at": None,
+                    "resolved_at": None,
+                }
+                self.network_missorts.append(rec)
+                self.problem_q.put(("network", len(self.network_missorts) - 1))
         trip.status = "arrived"
         trip.unloaded_at = self.env.now
         self.doors_free += 1
@@ -645,8 +953,8 @@ class StationOpsTwin:
         self.counters["arrived"] += 1
         if not pkg.manifested:
             self.counters["unmanifested_arrived"] += 1
-        if self.pick_started:
-            pkg.status = "rolled_over"
+        if self.pick_started and not self._forcing():
+            pkg.status = "next_cycle" if self._next_cycle_open() else "rolled_over"
             return
         pkg.status = "pending_induct"
         self.induct_q.put(idx, hi=hi)
@@ -663,12 +971,20 @@ class StationOpsTwin:
         if a.present:
             a.history.append((self.env.now / 60, a.role))
             self._go_idle(a)
-        while not self.departures_done:
+        while not self.departures_done or (
+            a.present and a.role == "problem_solve" and self._sweep_open()
+        ):
             if not a.present or a.role == "off":
                 a.task = "off_shift"
                 yield self.env.timeout(600)
                 continue
             role = a.role
+            if role in ("induct", "stow", "problem_solve") and not self.pick_started:
+                brk = self.in_break()
+                if brk:
+                    self._set_task(a, brk[1], None, None)
+                    yield self.env.timeout(max(1.0, brk[0] - self.env.now))
+                    continue
             if role == "induct":
                 yield from self._induct_task(a)
             elif role == "stow":
@@ -679,6 +995,9 @@ class StationOpsTwin:
                 yield from self._problem_task(a)
             elif role == "high_value":
                 yield from self._hv_task(a)
+            elif role == "yard_marshal":
+                self._set_task(a, "vsa_checks", None, "Yard")
+                yield self.env.timeout(_IDLE_POLL_S)
             else:
                 yield self.env.timeout(_IDLE_POLL_S)
         a.task = "off_shift"
@@ -695,34 +1014,77 @@ class StationOpsTwin:
     def _until_cutoff(self) -> float:
         return min(_IDLE_POLL_S, max(1.0, self.cutoff - self.env.now))
 
+    def _forcing(self) -> bool:
+        return self.force_until is not None and self.env.now < self.force_until
+
+    def _next_cycle_open(self) -> bool:
+        return self.next_cycle_until is not None and self.env.now < self.next_cycle_until
+
     def _induct_task(self, a: _Assoc):
-        if self.pick_started:
+        if self.pick_started and not (self._forcing() and a.home_role == "induct"):
             self.reassign(a, "pick")
             yield self.env.timeout(0)
             return
         line = a.line or 1
+        fast_end = (self.config.induct.start_minute + self.config.settings.fast_start_minutes) * 60
+        if self.env.now < fast_end:
+            self._set_task(a, "fast_start", f"L{line}", f"Induct {self.line_name(line)}")
+            yield self.env.timeout(fast_end - self.env.now)
+            return
         if self.line_down(line):
-            self._set_task(a, "line_down", f"L{line}", f"Induct L{line}")
+            self._set_task(a, "line_down", f"L{line}", f"Induct {self.line_name(line)}")
             yield self.env.timeout(
-                max(1.0, min(self._line_up_at(line), self.cutoff) - self.env.now)
+                max(
+                    1.0,
+                    min(self._line_up_at(line), max(self.cutoff, self.force_until or 0))
+                    - self.env.now,
+                )
             )
             return
-        idx = yield from self._wait_get(self.induct_q, a, self._until_cutoff())
+        auto = self.is_automated(line)
+        if not auto and len(self.noncon_q):
+            idx = yield from self._wait_get(self.noncon_q, a, 1)
+        else:
+            limit = self._until_cutoff() if not self._forcing() else _IDLE_POLL_S
+            idx = yield from self._wait_get(self.induct_q, a, limit)
         if idx is None:
             return
         pkg = self.pkgs[idx]
+        if pkg.status != "pending_induct":
+            return
+        if auto and not pkg.conveyable:
+            # non-conveyable: pulled off the automated line to manual handling
+            self.counters["noncon"] += 1
+            self.noncon_q.put(idx)
+            yield self.env.timeout(2)
+            return
         pkg.status = "inducting"
-        self._set_task(a, "inducting", pkg.tracking_id, f"Induct L{line}")
-        dur = 3600 / self.config.induct.rate_pph_per_line / a.skill * pkg.induct_mult
+        self._set_task(a, "inducting", pkg.tracking_id, f"Induct {self.line_name(line)}")
+        ic = self.config.induct
+        dur = 3600 / self.line_rate(line) / a.skill * pkg.induct_mult
         if not pkg.manifested:
             dur += 10
+        # micro-stop (jam clearing, label issue): the documented belt-gap defect
+        stop_p = 0.004 * self._scanner_factor(line)
+        if pkg.stop_u < stop_p:
+            dur += 20 + 100 * (pkg.stop_u / stop_p)
         yield self.env.timeout(dur)
         a.busy_s += dur
         a.units += 1
+        self._scan(line)
         pkg.line = line
+        pkg.inducted_by = a.login
         self.counters["induct_attempts"] += 1
         self.line_stats[line]["attempts"] += 1
-        ic = self.config.induct
+        if pkg.missed_induct and not pkg.reworked:
+            # carried past the scanner without a scan — sits on the floor until
+            # dwell / problem solve finds it (documented "missed induct")
+            pkg.status, pkg.ps_state = "missed_induct", "missed_induct"
+            self.counters["missed_induct"] += 1
+            self.line_stats[line]["missed_induct"] += 1
+            self.env.process(self._missed_found(idx))
+            self._go_idle(a)
+            return
         if not pkg.reworked:
             nr = ic.no_read_rate * self._scanner_factor(line)
             defect = None
@@ -737,19 +1099,57 @@ class StationOpsTwin:
             if defect:
                 self.counters[defect] += 1
                 self.line_stats[line][defect] += 1
+                if auto and defect in ("no_read", "multi_read"):
+                    self.finger_stats[self._finger(pkg)]["no_read"] += 1
                 pkg.status, pkg.problem = "problem_solve", defect
+                pkg.ps_state = "pending_ps"
                 self.problem_q.put(("pkg", idx))
                 self._go_idle(a)
                 return
         self._inducted(pkg, line)
         self._go_idle(a)
 
+    def _scan(self, line: int) -> None:
+        """Belt-gap accounting (documented): a gap between consecutive packages
+        on one belt of 20–120 s is a downtime defect; lost hours sum them."""
+        now = self.env.now
+        lo, hi = self.config.settings.belt_gap_defect_seconds
+        last = self._last_scan.get(line)
+        start = (self.config.induct.start_minute + self.config.settings.fast_start_minutes) * 60
+        if last is not None and last >= start:
+            gap = now - last
+            if lo < gap < hi:
+                self.gap_lost_s[line] += gap
+                self.gap_stops[line] += 1
+        self._last_scan[line] = now
+        self._line_scan_times[line].append(now)
+
+    def _missed_found(self, idx: int):
+        dwell = self.config.settings.induct_dwell_minutes
+        yield self.env.timeout((dwell + 15 + 30 * _u("mf", idx)) * 60)
+        pkg = self.pkgs[idx]
+        if pkg.status != "missed_induct":
+            return
+        if self.pick_started and not self._forcing():
+            pkg.status = "rolled_over"
+            return
+        pkg.status, pkg.problem = "problem_solve", "missed_induct"
+        self.problem_q.put(("pkg", idx))
+
+    def _finger(self, pkg: _Pkg) -> str:
+        cluster = self.routes[pkg.route].cluster
+        return self.finger_rebalanced.get(cluster, f"FINGER-{cluster}")
+
     def _inducted(self, pkg: _Pkg, line: int) -> None:
         pkg.inducted_at = self.env.now
-        if self.pick_started:
+        if pkg.cycle == "UNPLANNED":
+            pkg.cycle = self.config.cycle.name  # dynamic plan assigns the cycle at induct
+            self.counters["unplanned_inducted"] += 1
+        if self.pick_started and not self._forcing():
             pkg.status = "rolled_over"
             return
         self.counters["inducted"] += 1
+        self.counters["inducted_auto" if self.is_automated(line) else "inducted_manual"] += 1
         self.line_stats[line]["inducted"] += 1
         self._inducted_times.append(self.env.now)
         if pkg.hv:
@@ -759,28 +1159,85 @@ class StationOpsTwin:
         self.counters["sorted"] += 1
         if pkg.missort:
             self.counters["missorts"] += 1
+            pkg.misdivert_kind = "auto_divert" if self.is_automated(line) else "wrong_rack"
+        route = self.routes[pkg.route]
+        if self.pick_started and route.status not in ("not_ready", "ready"):
+            self._late_to_route(pkg)
+            return
+        if self.is_automated(line):
+            finger = self._finger(pkg)
+            pkg.finger = finger
+            fs = self.finger_stats[finger]
+            fs["volume"] += 1
+            if fs["buffer"] >= self.config.sort.finger_bay_capacity:
+                # bays full: the finger diverts to the jackpot
+                fs["full_bay"] += 1
+                fs["jackpot"] += 1
+                pkg.status = "jackpot"
+                self.counters["jackpot"] += 1
+                self.counters["full_bay"] += 1
+                self.cluster_stats[route.cluster]["jackpot"] += 1
+                self.problem_q.put(("jackpot", pkg.idx))
+                return
+            fs["buffer"] += 1
+        pkg.status = "stow_buffered"
+        self.n_buffered += 1
+        self.env.process(self._buffer(pkg))
+
+    def _buffer(self, pkg: _Pkg):
+        yield self.env.timeout(pkg.buffer_s)
+        if pkg.status != "stow_buffered":
+            return  # the drain closed first (already rolled over and un-counted)
+        self.n_buffered -= 1
+        if pkg.finger:
+            self.finger_stats[pkg.finger]["buffer"] -= 1
         pkg.status = "pending_stow"
         self.stow_q.put(pkg.idx)
 
+    def _late_to_route(self, pkg: _Pkg) -> None:
+        """Force-inducted after pick start: straight to the route's cart if the
+        van hasn't left, otherwise into tomorrow's cycle."""
+        route = self.routes[pkg.route]
+        if route.departed_at is None and route.status in ("staging", "staged", "picking"):
+            pkg.status, pkg.staged_at, pkg.picked_at = "staged", self.env.now, self.env.now
+            route.picked_count += 1
+            self.counters["force_staged"] += 1
+        else:
+            pkg.status = "next_cycle"
+            self.counters["next_cycle"] += 1
+
+    def _stow_draining(self) -> bool:
+        drain = self.config.stow.drain_minutes * 60
+        return self.env.now < self.cutoff + drain and (len(self.stow_q) > 0 or self.n_buffered > 0)
+
     def _stow_task(self, a: _Assoc):
-        if self.pick_started:
+        if self.pick_started and not self._stow_draining():
             self.reassign(a, "pick")
             yield self.env.timeout(0)
             return
-        idx = yield from self._wait_get(self.stow_q, a, self._until_cutoff())
+        idx = yield from self._wait_get(
+            self.stow_q, a, self._until_cutoff() if not self.pick_started else 60
+        )
         if idx is None:
             return
         pkg = self.pkgs[idx]
         route = self.routes[pkg.route]
         pkg.status = "stowing"
         self._set_task(a, "stowing", pkg.tracking_id, f"Aisle {route.aisle}")
-        extra = _MISSORT_REWORK_S if pkg.missort and pkg.missort_caught else 0
-        dur = 3600 / self.config.stow.rate_pph_per_stower / a.skill * pkg.stow_mult + extra
+        dur = 3600 / self.config.stow.rate_pph_per_stower / a.skill * pkg.stow_mult
         yield self.env.timeout(dur)
         a.busy_s += dur
         a.units += 1
+        if pkg.missort and pkg.missort_caught and not pkg.reworked:
+            # stow scan says wrong aisle cluster → problem solve → re-induct
+            a.stow_to_ps += 1
+            self.counters["stow_to_ps"] += 1
+            pkg.status, pkg.problem, pkg.ps_state = "problem_solve", "misdivert", "misdivert"
+            self.problem_q.put(("pkg", idx))
+            self._go_idle(a)
+            return
         if self.pick_started and route.status not in ("not_ready", "ready"):
-            pkg.status = "rolled_over"
+            self._late_to_route(pkg)
             self._go_idle(a)
             return
         if self.aisle_level[route.aisle] >= self.aisle_capacity.get(route.aisle, 10**9):
@@ -789,6 +1246,19 @@ class StationOpsTwin:
             self.cluster_stats[route.cluster]["jackpot"] += 1
             self.problem_q.put(("jackpot", idx))
         else:
+            pkg.stowed_by = a.login
+            if pkg.stower_err and not pkg.missort:
+                # stower put it on the wrong rack: a first-sort-attempt failure
+                pkg.missort, pkg.missort_caught = True, False
+                pkg.misdivert_kind = "stower"
+                a.fsaf += 1
+                self.counters["stower_fsaf"] += 1
+            if pkg.spot_u < self.config.stow.spot_check_rate:
+                a.spot_checks += 1
+                self.counters["spot_checks"] += 1
+                if pkg.missort and not pkg.missort_caught:
+                    a.spot_defects += 1
+                    self.counters["spot_defects"] += 1
             self._stowed(pkg, route.aisle)
         self._go_idle(a)
 
@@ -797,6 +1267,8 @@ class StationOpsTwin:
         pkg.stowed_at = self.env.now
         pkg.status = "stowed"
         pkg.location = location
+        if pkg.ps_state in ("pending_stow", "pending_reinduct", "misdivert", "missed_induct"):
+            pkg.ps_state = "resolved"
         if location == route.aisle:
             self.aisle_level[route.aisle] += 1
         self.counters["stowed"] += 1
@@ -804,11 +1276,32 @@ class StationOpsTwin:
         self._stowed_times.append(self.env.now)
 
     def _problem_task(self, a: _Assoc):
+        if self.pick_started and not len(self.problem_q):
+            aisle = self._next_sweep_aisle()
+            if aisle is not None:
+                yield from self._sweep(a, aisle)
+                return
+            if self.departures_done:
+                self._go_idle(a)
+                yield self.env.timeout(_IDLE_POLL_S)
+                return
         item = yield from self._wait_get(self.problem_q, a)
         if item is None:
             return
         kind, idx = item
+        if kind == "network":
+            rec = self.network_missorts[idx]
+            self._set_task(a, "problem:network_missort", rec["id"], "Problem solve")
+            dur = 90 / a.skill
+            yield self.env.timeout(dur)
+            a.busy_s += dur
+            rec["status"], rec["replanned_at"] = "pending_stow", self.env.now
+            self.env.process(self._network_stow(rec))
+            self._go_idle(a)
+            return
         pkg = self.pkgs[idx]
+        if pkg.status not in ("problem_solve", "jackpot"):
+            return  # already rolled over at pick start — nothing left to solve
         reason = "jackpot" if kind == "jackpot" else pkg.problem or "no_read"
         self._set_task(a, f"problem:{reason}", pkg.tracking_id, "Problem solve")
         dur = _PROBLEM_SECONDS.get(reason, 180) / a.skill
@@ -819,23 +1312,65 @@ class StationOpsTwin:
         if kind == "jackpot":
             route = self.routes[pkg.route]
             if self.pick_started and route.status not in ("not_ready", "ready"):
-                pkg.status = "rolled_over"
+                self._late_to_route(pkg)
             else:
                 self._stowed(pkg, f"OVERFLOW-{route.cluster}")
             self._go_idle(a)
             return
-        if reason == "damaged" and pkg.damaged_unrecoverable:
-            pkg.status = "held_damaged"
+        if reason == "damaged":
+            # damaged flow: PS scan → pending approval (manager review) → pending
+            # stow (repacked) or returned to FC / disposed
+            pkg.status, pkg.ps_state = "pending_approval", "pending_approval"
+            self.counters["damaged_pending_approval"] += 1
+            wi = self.work_items.add(
+                category="Sort",
+                kind="damaged_approval",
+                title=f"Approve damaged package {pkg.tracking_id}",
+                process="Problem solve",
+                priority=2,
+                owner="manager",
+                started_by="system",
+                ref=pkg.tracking_id,
+            )
+            self.env.process(self._approval(pkg, wi))
             self._go_idle(a)
             return
         pkg.reworked = True
         pkg.problem = None
-        if self.pick_started:
+        if reason in ("misdivert", "missed_induct"):
+            pkg.ps_state = "pending_reinduct"
+            self.counters["pending_reinduct"] += 1
+            pkg.missort = False
+        if self.pick_started and not self._forcing():
             pkg.status = "rolled_over"
         else:
             pkg.status = "pending_induct"
             self.induct_q.put(idx, hi=True)
         self._go_idle(a)
+
+    def _approval(self, pkg: _Pkg, wi: dict):
+        lo, hi = self.config.quality.damage_approval_minutes
+        wait = (lo + (hi - lo) * _u("appr", pkg.tracking_id)) * 60
+        waited = 0.0
+        while waited < wait and not self.approve_fast:
+            yield self.env.timeout(min(60.0, wait - waited))
+            waited += 60
+        pkg.approval_at = self.env.now
+        self.work_items.resolve_item(wi, "approved")
+        if pkg.damaged_unrecoverable:
+            pkg.status, pkg.ps_state = "held_damaged", "fc_return"
+            self.counters["fc_return"] += 1
+            return
+        pkg.ps_state, pkg.reworked, pkg.problem = "pending_stow", True, None
+        if self.pick_started and not self._forcing():
+            pkg.status = "rolled_over"
+        else:
+            pkg.status = "pending_induct"
+            self.induct_q.put(pkg.idx, hi=True)
+
+    def _network_stow(self, rec: dict):
+        yield self.env.timeout((10 + 25 * _u("nms", rec["id"])) * 60)
+        rec["status"], rec["resolved_at"] = "resolved", self.env.now
 
     def _hv_task(self, a: _Assoc):
         item = yield from self._wait_get(self.hv_q, a)
@@ -907,7 +1442,11 @@ class StationOpsTwin:
         for i in pick_ids:
             pkg = self.pkgs[i]
             if pkg.missort and not pkg.missort_caught:
-                pkg.status = "left_behind"
+                # stowed into a neighbouring aisle by mistake: invisible to the
+                # picker, found by the sweep or the scrub (if at all)
+                pkg.status, pkg.left_reason = "left_behind", "missort"
+                k = self.aisles.index(route.aisle)
+                pkg.location = self.aisles[(k + 1 + pkg.idx % 3) % len(self.aisles)]
                 continue
             pkg.status, pkg.picked_at = "picked", self.env.now
             route.picked_count += 1
@@ -915,9 +1454,20 @@ class StationOpsTwin:
         self.aisle_level[route.aisle] -= sum(
             1 for i in pick_ids if self.pkgs[i].location == route.aisle
         )
+        o = self.config.outbound
+        if route.forget_bag and route.picked_count > o.packages_per_bag:
+            bag = [i for i in pick_ids if self.pkgs[i].status == "picked" and not self.pkgs[i].hv][
+                -o.packages_per_bag :
+            ]
+            for i in bag:
+                p = self.pkgs[i]
+                p.status, p.left_reason, p.location = "left_behind", "bag_not_loaded", route.aisle
+                p.picked_at = None
+            route.picked_count -= len(bag)
+            route.forgotten = len(bag)
         route.picked_at = self.env.now
         route.status = "staging"
-        o = self.config.outbound
+        self.sweep_due[route.aisle] = self.env.now
         route.bags = max(1, math.ceil(max(1, route.picked_count) / o.packages_per_bag))
         route.carts = max(1, math.ceil(route.bags / o.bags_per_cart))
         hv = [i for i in route.packages if self.pkgs[i].hv and self.pkgs[i].status == "hv_in_cage"]
@@ -925,15 +1475,211 @@ class StationOpsTwin:
         if hv:
             self.hv_q.put(("handoff", route.idx), hi=True)
         self._set_task(a, "staging", route.route_id, route.staging_location)
-        for _ in range(route.carts):
-            per = lab.stage_minutes_per_cart * 60 / a.skill
+        for k in range(route.carts):
+            per = lab.stage_minutes_per_cart * 60 / a.skill + self._stage_conflict_s(route)
             yield self.env.timeout(per)
             a.busy_s += per
+            if route.misstage and k == route.carts - 1 and route.misstaged_since is None:
+                self._misstaged(route, a)
+                continue
             route.carts_staged += 1
+        if route.forgotten:
+            self.notify(
+                "supervisor",
+                "bag_not_loaded",
+                "warning",
+                f"{route.route_id}: bag picked but not scanned to cart",
+                f"{a.login} staged {route.route_id} one bag short — {route.forgotten} package(s) "
+                f"likely left in aisle {route.aisle}. Send the sweeper before the van leaves "
+                f"(depart {clock(route.planned_depart / 60)}).",
+                route_id=route.route_id,
+                aisle=route.aisle,
+            )
         for i in route.packages:
             if self.pkgs[i].status == "picked":
                 self.pkgs[i].status, self.pkgs[i].staged_at = "staged", self.env.now
         self._maybe_staged(route)
+        self._go_idle(a)
+
+    def _stage_conflict_s(self, route: _Route) -> float:
+        """A foreign cart sitting in this route's staging location slows the
+        stager down (they have to move it aside and re-check labels)."""
+        for r in self.routes:
+            if r.misstaged_at == route.staging_location and r.misstage_fixed_at is None:
+                return 90.0
+        return 0.0
+
+    def _misstaged(self, route: _Route, a: _Assoc) -> None:
+        n = len(self.routes)
+        other = self.routes[(route.idx + 2) % n]
+        route.misstaged_at = other.staging_location
+        route.misstaged_by = a.login
+        route.misstaged_since = self.env.now
+        self.counters["misstaged"] += 1
+        self.log(
+            "floor",
+            f"Wrong staging scan: {route.route_id} cart scanned into {other.staging_location} "
+            f"(expected {route.staging_location})",
+        )
+        self.notify(
+            "supervisor",
+            "wrong_staging_scan",
+            "critical",
+            f"Wrong staging scan — {route.route_id}",
+            f"{a.login} scanned a {route.route_id} cart into {other.staging_location} "
+            f"(belongs at {route.staging_location}). {route.route_id} can't load until it is "
+            f"moved; {other.route_id}'s location is obstructed.",
+            route_id=route.route_id,
+            location=other.staging_location,
+            expected=route.staging_location,
+            associate=a.login,
+        )
+        if route.driver is not None:
+            d = self.drivers[route.driver]
+            self.notify(
+                "dsp",
+                "staging_change",
+                "info",
+                f"{route.route_id}: hold at {route.staging_location}",
+                f"{d.driver_id} ({route.dsp}): one cart is being moved to "
+                f"{route.staging_location}; do not load from {other.staging_location}.",
+                route_id=route.route_id,
+                dsp=route.dsp,
+            )
+        if other.driver is not None:
+            self.notify(
+                "dsp",
+                "staging_change",
+                "info",
+                f"{other.route_id}: foreign cart at {other.staging_location}",
+                f"{self.drivers[other.driver].driver_id} ({other.dsp}): a {route.route_id} cart "
+                f"is in your location — check cart labels before loading.",
+                route_id=other.route_id,
+                dsp=other.dsp,
+            )
+        route.restage_ev = self.env.event()
+        self.env.process(self._misstage_watch(route))
+
+    def _misstage_watch(self, route: _Route):
+        yield self.env.timeout(route.misstage_notice_s) | route.restage_ev
+        route.restaging = True
+        who = "supervisor-directed" if route.restage_ev.triggered else "noticed on the floor"
+        yield self.env.timeout(self.config.outbound.restage_minutes * 60)
+        route.misstage_fixed_at = self.env.now
+        self.work_items.resolve("wrong_staging_scan", route.route_id, "cart restaged")
+        wrong = route.misstaged_at
+        route.misstaged_at = None
+        route.restaging = False
+        route.carts_staged += 1
+        mins = (self.env.now - route.misstaged_since) / 60
+        self.log(
+            "floor",
+            f"{route.route_id} cart moved from {wrong} to "
+            f"{route.staging_location} ({who}, {mins:.0f} min)",
+        )
+        self.notify(
+            "supervisor",
+            "restaged",
+            "info",
+            f"{route.route_id} cart restaged",
+            f"Cart moved {wrong} → {route.staging_location} after {mins:.0f} min ({who}).",
+            route_id=route.route_id,
+        )
+        self._maybe_staged(route)
+
+    # --- sweep (problem solve) -------------------------------------------------
+
+    def _aisle_picked(self, aisle: str) -> bool:
+        return all(r.picked_at is not None or r.sidelined for r in self.routes if r.aisle == aisle)
+
+    def _due_aisles(self) -> list[str]:
+        """Aisles where a route finished picking since the last sweep pass,
+        oldest first — the sweeper follows the pickers."""
+        due = [
+            x
+            for x, t in self.sweep_due.items()
+            if t > self.swept.get(x, -1.0) and x not in self.sweeping
+        ]
+        return sorted(due, key=lambda x: self.sweep_due[x])
+
+    def _sweep_open(self) -> bool:
+        return bool(self.sweep_priority or self._due_aisles())
+
+    def _next_sweep_aisle(self) -> str | None:
+        while self.sweep_priority:
+            x = self.sweep_priority.pop(0)
+            if x not in self.sweeping:
+                return x
+        due = self._due_aisles()
+        return due[0] if due else None
+
+    def _sweep(self, a: _Assoc, aisle: str):
+        self.sweeping.add(aisle)
+        self.sweep_passes[aisle] += 1
+        self._set_task(a, "sweeping", aisle, f"Aisle {aisle}")
+        dur = self.config.labor.sweep_minutes_per_aisle * 60 / a.skill
+        yield self.env.timeout(dur)
+        a.busy_s += dur
+        miss = self.config.labor.sweep_miss_rate
+        found = [
+            p
+            for p in self.pkgs
+            if p.status == "left_behind"
+            and p.location == aisle
+            and random.Random(
+                f"sweep:{self.config.seed}:{p.idx}:{self.sweep_passes[aisle]}"
+            ).random()
+            >= miss
+        ]
+        by_route: dict[int, list[_Pkg]] = defaultdict(list)
+        for p in found:
+            by_route[p.route].append(p)
+        for ridx, pkgs in by_route.items():
+            route = self.routes[ridx]
+            if route.departed_at is None:
+                walk = 60 / a.skill
+                self._set_task(a, "sweep_restage", route.route_id, route.staging_location)
+                yield self.env.timeout(walk)
+                a.busy_s += walk
+            if route.departed_at is None:
+                for p in pkgs:
+                    p.status = "staged" if route.staged_at is not None else "picked"
+                    p.staged_at = self.env.now if route.staged_at is not None else None
+                    p.picked_at = self.env.now
+                    p.recovered, p.location = "sweep_staged", route.staging_location
+                route.picked_count += len(pkgs)
+                self.counters["sweep_staged"] += len(pkgs)
+                self.work_items.resolve("bag_not_loaded", route.route_id, "found by sweep")
+                outcome = f"staged to {route.route_id}'s cart at {route.staging_location}"
+            else:
+                for p in pkgs:
+                    p.status, p.recovered, p.location = "cluster_transfer", "cluster_transfer", "CT"
+                self.counters["cluster_transfer"] += len(pkgs)
+                self.work_items.resolve("bag_not_loaded", route.route_id, "cluster transfer")
+                outcome = f"{route.route_id} already departed → cluster transfer to next cycle"
+            self.sweep_log.append(
+                {
+                    "minute": self.env.now / 60,
+                    "clock": clock(self.env.now / 60),
+                    "aisle": aisle,
+                    "route_id": route.route_id,
+                    "packages": len(pkgs),
+                    "reasons": sorted({p.left_reason or "?" for p in pkgs}),
+                    "outcome": "staged" if route.departed_at is None else "cluster_transfer",
+                    "by": a.login,
+                }
+            )
+            self.notify(
+                "supervisor",
+                "sweep_found",
+                "info" if route.departed_at is None else "warning",
+                f"Sweep found {len(pkgs)} package(s) in {aisle}",
+                f"{a.login}: {len(pkgs)} {route.route_id} package(s) — {outcome}.",
+                route_id=route.route_id,
+                aisle=aisle,
+            )
+        self.swept[aisle] = self.env.now
+        self.sweeping.discard(aisle)
         self._go_idle(a)
 
     def _maybe_staged(self, route: _Route) -> None:
@@ -990,9 +1736,11 @@ class StationOpsTwin:
                 if d.wake.triggered:
                     continue
                 if d.state != "released" and r.driver == d.idx:
-                    self.apply(
+                    rec = self.apply(
                         Intervention(kind="reassign_standby", target=r.route_id, source="dsp_auto")
                     )
+                    if rec["effect"].startswith("no-op"):
+                        self._no_driver(r)
                 return
             if self.env.now < leave:
                 d.state = "off_duty"
@@ -1015,6 +1763,9 @@ class StationOpsTwin:
         d.state = "checked_in"
         route = self.routes[d.route]
         self.log("dispatch", f"{d.driver_id} ({d.dsp}) checked in for {route.route_id}")
+        yield from self._vsa(d)
+        if d.state == "released":
+            return
         if route.staged_at is None:
             ev = self._staged_events.setdefault(route.idx, self.env.event())
             yield ev
@@ -1025,6 +1776,107 @@ class StationOpsTwin:
         route.status = "loading"
         yield self.env.timeout(self.config.dispatch.load_minutes * 60)
         self._depart(route, d)
+
+    def _vsa(self, d: _Driver):
+        """Yard marshal vehicle safety audit before loading. Marshals are a
+        finite resource (queue at wave peaks); a defect is fixed on site or
+        grounds the van until a replacement arrives."""
+        disp = self.config.dispatch
+        route = self.routes[d.route]
+        d.state = "vsa"
+        k = min(range(len(self._marshal_free)), key=self._marshal_free.__getitem__)
+        start = max(self.env.now, self._marshal_free[k])
+        dur = disp.vsa_minutes * 60
+        self._marshal_free[k] = start + dur
+        d.vsa_wait_s = start - self.env.now
+        yield self.env.timeout(start + dur - self.env.now)
+        d.vsa_at = self.env.now
+        if d.vsa_u < disp.vsa_ground_rate:
+            d.vsa_result, d.state, d.grounded_at = "grounded", "grounded", self.env.now
+            self.counters["vsa_grounded"] += 1
+            self.log(
+                "dispatch",
+                f"VSA FAIL: {d.driver_id}'s van grounded ({d.vsa_defect}) — {route.route_id}",
+            )
+            self.notify(
+                "supervisor",
+                "van_grounded",
+                "critical",
+                f"Van grounded — {route.route_id}",
+                f"Yard marshal failed {d.driver_id}'s van ({d.dsp}): {d.vsa_defect}. "
+                f"{route.route_id} (depart {clock(route.planned_depart / 60)}) needs a "
+                "replacement van.",
+                route_id=route.route_id,
+                dsp=d.dsp,
+            )
+            self.notify(
+                "dsp",
+                "van_grounded",
+                "critical",
+                f"{d.dsp}: van grounded on {route.route_id}",
+                f"{d.driver_id}'s van failed VSA ({d.vsa_defect}) and is grounded. Follow-up: "
+                "replacement van, defect report, van removed from service until repaired.",
+                route_id=route.route_id,
+                dsp=d.dsp,
+            )
+            d.van_event = self.env.event()
+            self.env.process(self._dsp_default_replace(d))
+            yield d.van_event
+            if d.state == "released":
+                return
+            d.state = "vsa"
+            yield self.env.timeout(dur)  # replacement van audited
+            d.vsa_result = "replaced"
+            self.work_items.resolve("van_grounded", self.routes[d.route].route_id, "van replaced")
+        elif d.vsa_u < disp.vsa_ground_rate + disp.vsa_minor_rate:
+            d.vsa_result, d.state = "minor_fixed", "vsa_fix"
+            self.counters["vsa_minor"] += 1
+            self.log(
+                "dispatch", f"VSA: {d.driver_id} minor defect ({d.vsa_defect}), fixing on site"
+            )
+            yield self.env.timeout(d.vsa_fix_s)
+        else:
+            d.vsa_result = "pass"
+        self.counters["vsa_done"] += 1
+        d.state = "checked_in"
+
+    def _dsp_default_replace(self, d: _Driver):
+        yield self.env.timeout(self.config.dispatch.dsp_replace_after_minutes * 60)
+        if d.van_request is None and d.state == "grounded":
+            self._request_van(d, "dsp_default")
+
+    def _request_van(self, d: _Driver, source: str) -> str:
+        disp = self.config.dispatch
+        route = self.routes[d.route]
+        if self.spare_vans.get(d.dsp, 0) > 0:
+            self.spare_vans[d.dsp] -= 1
+            kind, lead = f"{d.dsp} spare van", disp.replacement_van_minutes
+        else:
+            donor = next((k for k, v in self.spare_vans.items() if v > 0), None)
+            if donor:
+                self.spare_vans[donor] -= 1
+                kind, lead = f"van borrowed from {donor}", disp.borrowed_van_minutes
+            else:
+                kind, lead = "rental van", disp.rental_van_minutes
+        d.van_request = kind
+        d.van_eta = self.env.now + lead * 60
+        self.notify(
+            "dsp",
+            "replacement_van",
+            "warning",
+            f"{route.route_id}: {kind} dispatched",
+            f"{kind} for {d.driver_id}, ETA {clock(d.van_eta / 60)} (requested by {source}).",
+            route_id=route.route_id,
+            dsp=d.dsp,
+        )
+        self.env.process(self._van_arrives(d, lead * 60))
+        return f"{kind} requested for {route.route_id}, ETA {clock(d.van_eta / 60)}"
+
+    def _van_arrives(self, d: _Driver, lead: float):
+        yield self.env.timeout(lead)
+        self.log("dispatch", f"Replacement van arrived for {self.routes[d.route].route_id}")
+        if d.van_event is not None and not d.van_event.triggered:
+            d.van_event.succeed()
 
     def _standby_proc(self, d: _Driver):
         d.leave_at = self.env.now
@@ -1067,11 +1919,28 @@ class StationOpsTwin:
         )
         if all(r.departed_at is not None or r.sidelined for r in self.routes):
             self.departures_done = True
+            self.departures_done_at = now
+            self.log("shift", "All routes departed — associates finishing their shift")
+            # inducted into today's cycle after the cut without a cycle change →
+            # held as wrong-cycle induct (needs problem solve tomorrow)
+            held = 0
+            for p in self.pkgs:
+                if (
+                    p.status == "rolled_over"
+                    and p.inducted_at is not None
+                    and p.inducted_at >= self.cutoff
+                ):
+                    p.status = "held_wrong_cycle"
+                    held += 1
+            self.counters["held_wrong_cycle"] += held
+            self.env.process(self.closeout.run())
             self.env.process(self._end_of_day())
 
     def _end_of_day(self):
         last = max((d.return_at or 0) for d in self.drivers)
         yield self.env.timeout(max(0.0, min(last, DAY_END_MINUTE * 60) - self.env.now))
+        if not self.closeout.complete:
+            yield self.closeout.done_event
         self.day_complete = True
 
     # --- cycle --------------------------------------------------------------
@@ -1081,15 +1950,50 @@ class StationOpsTwin:
             yield self.env.timeout(self.cutoff - self.env.now)
         self.pick_started = True
         self.log("cycle", f"Pick started for {self.config.cycle.name} — induct blocked")
-        for pkg in self.pkgs:
-            if pkg.status in ("pending_induct", "pending_stow", "problem_solve", "jackpot"):
-                pkg.status = "rolled_over"
+        forcing = self._forcing()
+        if not forcing:
+            for pkg in self.pkgs:
+                if pkg.status in ("pending_induct", "problem_solve", "jackpot", "missed_induct"):
+                    pkg.status = "rolled_over"
+        on_floor = sum(
+            1 for p in self.pkgs if p.status == "rolled_over" and p.arrived_at is not None
+        )
+        self.notify(
+            "manager",
+            "cycle_pick_started",
+            "warning",
+            f"Pick has started for {self.config.cycle.name} — induct is blocked",
+            f"{on_floor} package(s) on the floor missed the cycle. Change the cycle (move them to "
+            "tomorrow cleanly), force-induct late volume whose routes haven't left, or enable "
+            "the next cycle for new arrivals.",
+        )
         for r in self.routes:
             if r.status == "not_ready":
                 r.status = "ready"
         for a in self.assocs:
-            if a.role in ("induct", "stow"):
+            if a.role == "induct" and not forcing:
                 self.reassign(a, "pick")
+        # stowers keep draining the stow buffer (see _stow_draining), then pick
+
+    def _drain_end(self):
+        """When the stow drain after pick start ends, whatever is still in the
+        stow buffer missed the cycle (rolls over)."""
+        while True:
+            end = self.cutoff + self.config.stow.drain_minutes * 60
+            if self.env.now >= end:
+                break
+            yield self.env.timeout(end - self.env.now)
+        n = 0
+        for p in self.pkgs:
+            if p.status in ("stow_buffered", "pending_stow"):
+                if p.status == "stow_buffered":
+                    self.n_buffered -= 1
+                    if p.finger:
+                        self.finger_stats[p.finger]["buffer"] -= 1
+                p.status = "rolled_over"
+                n += 1
+        if n:
+            self.log("cycle", f"Stow drain closed — {n} buffered package(s) rolled over")
 
     def _sampler(self):
         bucket = SERIES_BUCKET_MINUTES * 60
@@ -1099,18 +2003,52 @@ class StationOpsTwin:
             if t % bucket == 0:
                 s = self.series
                 s["minute"].append(t / 60)
-                for k in ("arrived", "inducted", "stowed", "picked"):
+                for k in (
+                    "arrived",
+                    "inducted",
+                    "stowed",
+                    "picked",
+                    "inducted_auto",
+                    "inducted_manual",
+                ):
                     s[k].append(self.counters[k] - last[k])
                     last[k] = self.counters[k]
+                s["labor_yard_marshal"].append(
+                    len(self._marshal_free) * SERIES_BUCKET_MINUTES / 60
+                    if self.env.now >= (self.cutoff - 60 * 60)
+                    else 0
+                )
+                s["labor_idle"].append(
+                    sum(1 for a in self.assocs if a.present and a.task == "idle")
+                    * SERIES_BUCKET_MINUTES
+                    / 60
+                )
+                s["stowers_active"].append(self.active("stow"))
                 s["wip_minutes"].append(round(self.wip_minutes(), 1))
                 s["departed_routes"].append(
                     sum(1 for r in self.routes if r.departed_at is not None)
                 )
                 for role in ("induct", "stow", "pick", "problem_solve", "high_value"):
                     s[f"labor_{role}"].append(self.active(role) * SERIES_BUCKET_MINUTES / 60)
-            if self.config.induct.start_minute * 60 <= t < self.cutoff and self.active("stow"):
-                lo, hi = self.config.stow.wip_target_min, self.config.stow.wip_target_max
-                self._wip_samples.append(lo <= self.wip_minutes() <= hi)
+            st = self.config.settings
+            interval = st.compliance_interval_minutes * 60
+            start = self.config.induct.start_minute * 60
+            w = st.induct_fph_window_minutes * 60
+            # skip breaks and the FPH window after one (rolling FPH reads 0 there)
+            settling = self.in_break(t) or self.in_break(t - w)
+            if start <= t < self.cutoff and not settling:
+                self._wip_samples.append(self.wip_minutes())
+            if t > start and t <= self.cutoff + 1 and (t - start) % interval == 0:
+                # documented: compliance over 15-minute intervals within thresholds
+                samples = [x for x in self._wip_samples if x is not None]
+                self._wip_samples = []
+                if samples:
+                    avg = sum(min(x, 999.0) for x in samples) / len(samples)
+                    ok = st.stow_wip_lower_min <= avg <= st.stow_wip_upper_min
+                    self.wip_intervals.append(
+                        {"end": t / 60, "clock": clock(t / 60), "wip": round(avg, 1), "ok": ok}
+                    )
+            self.work_items.tick()
             yield self.env.timeout(WIP_SAMPLE_MINUTES * 60)
 
     def _scheduled(self, iv: Intervention):
@@ -1363,7 +2301,7 @@ class StationOpsTwin:
         if self.standby_remaining.get(r.dsp, 0) <= 0:
             return f"no-op: {r.dsp} has no standby driver left"
         old = self.drivers[r.driver]
-        if old.state in ("checked_in", "loading"):
+        if old.state in ("checked_in", "loading", "vsa", "vsa_fix", "grounded"):
             return "no-op: assigned driver already checked in"
         self.standby_remaining[r.dsp] -= 1
         old.state = "released"
@@ -1384,11 +2322,39 @@ class StationOpsTwin:
             standby=True,
             notified_at=now,
         )
+        self._draw_vsa(new, rng)
         self.drivers.append(new)
         r.driver = new.idx
         self.env.process(self._standby_proc(new))
         eta = clock((now + lead) / 60)
         return f"{r.dsp} standby {new.driver_id} assigned to {r.route_id}, ETA {eta}"
+
+    def _no_driver(self, r: _Route) -> None:
+        """No driver and no standby anywhere: the route can't go out today.
+        Its packages stay in the station (not attempted) and roll to tomorrow."""
+        r.sidelined = True
+        n = 0
+        for i in r.packages:
+            p = self.pkgs[i]
+            if p.status in ("staged", "picked", "stowed", "hv_in_cage"):
+                p.status, p.attempted = "rolled_over", None
+                n += 1
+        self.notify(
+            "manager",
+            "route_unassigned",
+            "critical",
+            f"{r.route_id}: no driver available",
+            f"{r.dsp} had no standby left; {n} package(s) on {r.route_id} roll to tomorrow.",
+            route_id=r.route_id,
+        )
+        if (
+            all(x.departed_at is not None or x.sidelined for x in self.routes)
+            and not self.departures_done
+        ):
+            self.departures_done = True
+            self.departures_done_at = self.env.now
+            self.env.process(self.closeout.run())
+            self.env.process(self._end_of_day())
 
     def _act_notify_swipe_finish(self, iv, n):
         now = self.env.now
@@ -1468,6 +2434,179 @@ class StationOpsTwin:
             return f"Unplanned volume surge: {len(ids)} unmanifested packages arrived"
         return f"unknown disruption {kind}"
 
+    def _act_restage_cart(self, iv, n):
+        r = self.route_by_id(iv.target)
+        if r is None or r.misstaged_at is None or r.misstage_fixed_at is not None:
+            return "no-op: no misstaged cart for that route"
+        if r.restaging or r.restage_ev.triggered:
+            return f"no-op: {r.route_id} cart already being moved"
+        r.restage_ev.succeed()
+        return (
+            f"{r.route_id}: nearest associate sent to move the cart {r.misstaged_at} → "
+            f"{r.staging_location} (~{self.config.outbound.restage_minutes:.0f} min); "
+            "DSPs of both routes told to check labels"
+        )
+
+    def _act_direct_sweep(self, iv, n):
+        aisle = iv.target
+        if aisle not in self.aisles:
+            return "no-op: unknown aisle"
+        if aisle in self.sweep_priority or aisle in self.sweeping:
+            return f"no-op: aisle {aisle} already being swept"
+        if not any(a.present and a.role == "problem_solve" for a in self.assocs):
+            if not self._take_associates(1, "problem_solve", "pick"):
+                return "no-op: no sweeper available"
+        self.sweep_priority.append(aisle)
+        return f"sweeper directed to aisle {aisle} next"
+
+    def _act_request_replacement_van(self, iv, n):
+        r = self.route_by_id(iv.target)
+        if r is None or r.driver is None:
+            return "no-op: unknown route"
+        d = self.drivers[r.driver]
+        if d.state != "grounded":
+            return "no-op: van not grounded"
+        if d.van_request:
+            return f"no-op: {d.van_request} already on the way"
+        return self._request_van(d, iv.source)
+
+    def _act_add_yard_marshal(self, iv, n):
+        if self.extra_marshals >= 2:
+            return "no-op: 2 extra yard marshals already assigned"
+        got = self._take_associates(1, "yard_marshal", "pick") or self._take_associates(
+            1, "yard_marshal", "problem_solve"
+        )
+        if not got:
+            return "no-op: no associate free to marshal the yard"
+        self.extra_marshals += 1
+        self._marshal_free.append(self.env.now)
+        return f"extra yard marshal assigned to VSA checks ({len(self._marshal_free)} marshals)"
+
+    def _act_check_ferry(self, iv, n):
+        return self.closeout.request_ferry_check(iv.source)
+
+    def _act_draft_gtdr(self, iv, n):
+        return self.closeout.draft_gtdrs(iv.source)
+
+    def _act_replan_next_day(self, iv, n):
+        return self.closeout.request_replan(iv.source)
+
+    def _act_offer_vet(self, iv, n):
+        return self.closeout.opportunities.post("VET", max(1, n), iv.params.get("frame"), iv.source)
+
+    def _act_offer_vto(self, iv, n):
+        return self.closeout.opportunities.post("VTO", max(1, n), iv.params.get("frame"), iv.source)
+
+    # --- v2 levers: cycles, fingers, approvals, trips, planning --------------------
+
+    def _act_force_induct(self, iv, n):
+        """Keep induct open after pick start for late volume whose routes
+        haven't departed (bounded window)."""
+        cap = self.config.cycle.max_force_induct_minutes
+        minutes = max(5.0, min(float(iv.amount or 15), cap))
+        if self.env.now < self.cutoff - 60 * 60:
+            return "no-op: force induct is for the pick-start window (within 60 min of pick start)"
+        start = max(self.env.now, self.cutoff)
+        end = start + minutes * 60
+        if self.force_until is not None and self.force_until >= end:
+            return "no-op: force induct already open that long"
+        self.force_until = end
+        requeued = 0
+        if self.pick_started:
+            for p in self.pkgs:
+                if p.status == "rolled_over" and p.arrived_at is not None and p.inducted_at is None:
+                    p.status = "pending_induct"
+                    self.induct_q.put(p.idx, hi=True)
+                    requeued += 1
+            for a in self.assocs:
+                if a.present and a.home_role == "induct" and a.home_line and a.role == "pick":
+                    if a.task not in ("picking", "staging"):
+                        self.reassign(a, "induct")
+                        a.line = a.home_line
+        self.cycle_changes.append(
+            {
+                "clock": clock(self.env.now / 60),
+                "action": "force_induct",
+                "minutes": minutes,
+                "packages": requeued,
+            }
+        )
+        return (
+            f"force induct open until {clock(end / 60)} ({minutes:.0f} min): late volume goes "
+            f"straight to its route if the van hasn't left; {requeued} package(s) re-queued"
+        )
+
+    def _act_change_cycle(self, iv, n):
+        """Move rolled-over volume on the floor into tomorrow's cycle cleanly
+        (no wrong-cycle holds, no re-induct tomorrow)."""
+        if not self.pick_started:
+            return "no-op: change cycle applies once pick has started"
+        moved = 0
+        for p in self.pkgs:
+            if p.status == "rolled_over" and p.arrived_at is not None:
+                p.status = "next_cycle"
+                moved += 1
+        self.counters["next_cycle"] += moved
+        self.cycle_changes.append(
+            {"clock": clock(self.env.now / 60), "action": "change_cycle", "packages": moved}
+        )
+        self.work_items.resolve("cycle_pick_started", None, "cycle changed")
+        return f"{moved} package(s) moved to tomorrow's cycle (no wrong-cycle holds)"
+
+    def _act_enable_cycle(self, iv, n):
+        """Enable the next cycle on this node for N hours: late arrivals after
+        pick start are received straight into tomorrow's cycle."""
+        hours = max(1.0, min(float(iv.amount or 4), 8))
+        self.next_cycle_until = max(self.env.now, self.cutoff) + hours * 3600
+        self.cycle_changes.append(
+            {"clock": clock(self.env.now / 60), "action": "enable_cycle", "hours": hours}
+        )
+        return f"next cycle enabled until {clock(self.next_cycle_until / 60)} for late arrivals"
+
+    def _act_rebalance_finger(self, iv, n):
+        """Point a full finger's cluster at the other finger (container builders follow)."""
+        cluster = (iv.target or "").replace("FINGER-", "") or None
+        fingers = {
+            f"FINGER-{c}": self.finger_stats[f"FINGER-{c}"]["buffer"]
+            for c in self.config.sort.clusters
+        }
+        if cluster is None:
+            cluster = max(fingers, key=fingers.get).replace("FINGER-", "")
+        others = [f for f in fingers if f != f"FINGER-{cluster}"]
+        if not others:
+            return "no-op: only one finger"
+        to = min(others, key=fingers.get)
+        if self.finger_rebalanced.get(cluster) == to:
+            return f"no-op: cluster {cluster} already rebalanced to {to}"
+        self.finger_rebalanced[cluster] = to
+        return f"cluster {cluster} volume rebalanced from FINGER-{cluster} to {to}"
+
+    def _act_approve_damaged(self, iv, n):
+        pending = sum(1 for p in self.pkgs if p.ps_state == "pending_approval")
+        self.approve_fast = True
+        return f"manager review expedited: {pending} damaged package(s) pending approval cleared"
+
+    def _act_watch_trip(self, iv, n):
+        tid = iv.target
+        if not any(t.trip_id == tid for t in self.config.linehauls):
+            return "no-op: unknown trip"
+        if tid in self.watch:
+            self.watch.discard(tid)
+            return f"{tid} removed from the watch list"
+        self.watch.add(tid)
+        return f"{tid} added to the watch list"
+
+    def _act_post_opportunity(self, iv, n):
+        return self.closeout.opportunities.post(
+            iv.target or "VET", int(iv.amount or 1), iv.params.get("frame"), iv.source
+        )
+
+    def _act_close_window(self, iv, n):
+        return self.closeout.opportunities.close(iv.target, iv.source)
+
+    def _act_rerun_rotation(self, iv, n):
+        return self.closeout.rerun_rotation(iv.source)
+
     def driver_targets(self, target: str | None) -> list[_Driver]:
         live = [d for d in self.drivers if d.state in ("off_duty", "en_route") and not d.standby]
         if target in (None, "late", "at_risk"):
@@ -1517,8 +2656,41 @@ class StationOpsTwin:
         stowers = self.active("stow") or self.config.stow.stowers
         return max(1, stowers) * self.config.stow.rate_pph_per_stower / 60
 
-    def wip_minutes(self) -> float:
-        return len(self.stow_q) / self.total_stow_rate_per_min()
+    def inc_pending_stow(self) -> int:
+        """INC (documented): valid induct scan, not stowed."""
+        return (
+            self.n_buffered + len(self.stow_q) + sum(1 for a in self.assocs if a.task == "stowing")
+        )
+
+    def stow_fph(self) -> float:
+        """Stowed per hour, rolling window (window = settings' FPH window)."""
+        w = self.config.settings.induct_fph_window_minutes
+        return self.rate_window(self._stowed_times, w) * 60 / w
+
+    def induct_fph(self) -> float:
+        """Documented: inducted volume in the past rolling 10 min, per hour."""
+        w = self.config.settings.induct_fph_window_minutes
+        return self.rate_window(self._inducted_times, w) * 60 / w
+
+    def wip_minutes(self) -> float | None:
+        """Stow WIP (documented): (inducted pending stow ÷ Stow FPH) × 60.
+        None when nothing is pending; 999 caps "no stow flow yet"."""
+        inc = self.inc_pending_stow()
+        if inc == 0:
+            return 0.0
+        fph = self.stow_fph()
+        if fph <= 0:
+            return 999.0
+        return inc / fph * 60
+
+    def rate_window(self, times: list[float], minutes: float) -> int:
+        lo = self.env.now - minutes * 60
+        n = 0
+        for t in reversed(times):
+            if t < lo:
+                break
+            n += 1
+        return n
 
     def rate_last_hour(self, times: list[float]) -> int:
         lo = self.env.now - 3600

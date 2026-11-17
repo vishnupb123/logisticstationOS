@@ -329,3 +329,25 @@ tr.recv-head td {
     max-width: 96px;
   }
 }
+
+@media (max-width: 720px) {
+  /* room for the notification bell on phones */
+  .topbar__env {
+    display: none;
+  }
+  .theme-toggle {
+    max-width: 84px;
+  }
+}
+
+.assistant-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 16px;
+}
+
+@media (max-width: 960px) {
+  .assistant-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

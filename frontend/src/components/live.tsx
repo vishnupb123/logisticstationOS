@@ -57,7 +57,7 @@ export function Tabs<T extends string>({
   value,
   onChange,
 }: {
-  tabs: readonly T[] | { key: T; label: ReactNode }[];
+  tabs: readonly T[] | readonly { key: T; label: ReactNode }[];
   value: T;
   onChange: (t: T) => void;
 }) {
@@ -105,6 +105,9 @@ const TONE: Record<string, string> = {
   down: "bad",
   cancelled: "bad",
   no_show: "bad",
+  grounded: "bad",
+  vsa: "info",
+  vsa_fix: "warn",
 };
 
 export function Pill({ value, label }: { value: string; label?: string }) {

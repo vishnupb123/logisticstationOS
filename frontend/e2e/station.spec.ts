@@ -1,6 +1,7 @@
 // The live station end to end: a running simulated day shared by every page,
 // agents acting on it, the chat assistant, DSP coordination, pick
-// prioritisation, scrubs, copilot approvals, and truckfile → live day.
+// prioritisation, scrubs, copilot approvals, close-out, the next day from the
+// final truckfile, and the assistant's explanations.
 import type { APIRequestContext, Page } from "@playwright/test";
 import { expect, test } from "./fixtures.ts";
 
@@ -18,7 +19,8 @@ async function waitForClock(page: Page, hhmm: string, timeout = 60_000) {
     .toBeGreaterThanOrEqual(toMin(hhmm));
 }
 
-test("the session bar shows a live, advancing simulated day and can start a new one", async ({ page }) => {
+test("the session bar shows a live, advancing simulated day and can start a new one", async ({ page, request }) => {
+  await newDay(request, "normal_day", 5);
   await page.goto("/command");
   const clock = page.getByTestId("sim-clock-global");
   await expect(clock).toBeVisible();
@@ -93,7 +95,7 @@ test("live pages render their tables", async ({ page, request }) => {
     ["/stow", "stow-buffers"],
     ["/induct", "sort-hourly"],
     ["/inbound", "receive-overall"],
-    ["/stage", "stage-table"],
+    ["/stage", "staging-floor"],
     ["/outbound", "wave-grid"],
     ["/station", "layout-aisles"],
   ] as const) {
@@ -102,26 +104,13 @@ test("live pages render their tables", async ({ page, request }) => {
   }
 });
 
-test("truckfile: create, ferry check, then run that day live", async ({ page }) => {
-  const d = new Date(Date.UTC(2030, 0, 1) + (Date.now() % 3_000) * 86_400_000);
-  const date = d.toISOString().slice(0, 10);
-  await page.goto("/truckfile");
-  await page.getByLabel("OFD date").fill(date);
-  await page.getByLabel("Crossing weather").selectOption("severe");
-  await page.getByRole("button", { name: /Create truckfile/ }).click();
-  await expect(page.getByTestId("tf-summary")).toContainText("ferry trips");
-  await page.getByTestId("tf-simulate").click();
-  await expect(page.getByRole("heading", { level: 1, name: "Station Command Center" })).toBeVisible();
-  await expect(page.getByTestId("session-bar")).toContainText(new RegExp(`truckfile ${date}`, "i"));
-});
-
 test("station agent investigation flows into approval and observed outcome", async ({ page }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(330_000); // v2 model: heavier counterfactual planning per investigation
   await page.goto("/agent/investigations");
   await page.getByLabel("Scenario").selectOption("induct_line_outage");
   await page.getByLabel("Investigate up to").selectOption("420");
   await page.getByTestId("sa-run").click();
-  await expect(page.getByTestId("exec-status")).toHaveText(/completed|degraded/, { timeout: 150_000 });
+  await expect(page.getByTestId("exec-status")).toHaveText(/completed|degraded/, { timeout: 300_000 });
   await expect(page.getByTestId("exec-findings")).toContainText("recommend");
   await page.getByTestId("exec-decisions").getByRole("link").first().click();
   await expect(page.getByRole("heading", { level: 1, name: "station_ops_mitigation" })).toBeVisible();
@@ -132,4 +121,67 @@ test("station agent investigation flows into approval and observed outcome", asy
   await page.getByRole("button", { name: "Approve" }).click();
   await page.getByRole("button", { name: "Observe outcome" }).click();
   await expect(page.getByTestId("observed-outcome")).toContainText("fresh seed");
+});
+
+test("live staging floor plan and aisle plan show the pick floor, with click-through detail", async ({ page, request }) => {
+  await newDay(request, "normal_day", 60, "observe", 2);
+  await page.goto("/stage");
+  await waitForClock(page, "09:15", 90_000);
+  await expect(page.getByTestId("staging-floor")).toBeVisible();
+  await expect(page.getByTestId("wave-strip")).toContainText("W1");
+  await page.getByTestId("slot-STG-A01").click();
+  await expect(page.getByTestId("slot-detail")).toContainText("R-001");
+  await page.goto("/pick");
+  await page.getByTestId("aisle-plan-toggle").click();
+  await expect(page.getByTestId("aisle-plan")).toBeVisible();
+  await page.getByTestId("aisle-A01").click();
+  await expect(page.getByTestId("aisle-detail")).toContainText("Aisle A01");
+});
+
+test("yard VSA, DSP comms and the notification centre", async ({ page, request }) => {
+  await newDay(request, "normal_day", 60, "observe", 2);
+  await page.goto("/dispatch");
+  await waitForClock(page, "10:30", 90_000);
+  await page.getByRole("tab", { name: "Yard · VSA" }).click();
+  await expect(page.getByTestId("vsa-table")).toContainText(/pass/);
+  await page.getByRole("tab", { name: "DSP comms" }).click();
+  await expect(page.getByTestId("notification-list")).toBeVisible();
+  await page.getByTestId("notification-bell").click();
+  const dialog = page.getByRole("dialog", { name: "Notifications" });
+  await expect(dialog).toContainText(/Wrong staging scan|Van grounded|bag/i);
+  await dialog.getByRole("button", { name: "Acknowledge all" }).click();
+  await expect(dialog.getByRole("button", { name: "Acknowledge", exact: true })).toHaveCount(0);
+});
+
+test("after dispatch: close-out tasks, tomorrow's truckfile and plan", async ({ page, request }) => {
+  await newDay(request, "normal_day", 60, "observe", 2);
+  await page.goto("/closeout");
+  await expect(page.getByTestId("tasks-supervisor")).toBeVisible({ timeout: 120_000 });
+  await expect(page.getByTestId("tasks-supervisor")).toContainText(/GTDR|ferry|Floor close/);
+  await page.getByTestId("co-check-ferry").click();
+  await expect(page.getByRole("status").filter({ hasText: /ferry check/ }).first()).toBeVisible();
+  await page.getByRole("tab", { name: "Truckfile" }).click();
+  await expect(page.getByTestId("tomorrow-truckfile")).toContainText("PORT-X1");
+  await page.getByRole("tab", { name: "Scrubs & sweep" }).click();
+  await expect(page.getByTestId("sweep-log")).toBeVisible();
+});
+
+test("the next day runs from the final truckfile, and the assistant explains the shift with sources", async ({ page, request }) => {
+  await newDay(request, "ferry_disruption", 60, "observe", 2);
+  await page.goto("/closeout");
+  await expect(page.getByTestId("run-next-day")).toBeVisible({ timeout: 120_000 });
+  await page.goto("/assistant");
+  const input = page.getByLabel("Message the station assistant");
+  await input.fill("why did DEA drop?");
+  await input.press("Enter");
+  const answer = page.getByTestId("chat-assistant").last();
+  await expect(answer).toContainText("Where the misses came from", { timeout: 90_000 });
+  await expect(answer).toContainText(/Sources \(\d+\)/);
+  await input.fill("status of the trucks and ferries");
+  await input.press("Enter");
+  await expect(page.getByTestId("chat-assistant").last()).toContainText("Tomorrow's truckfile", { timeout: 90_000 });
+  await page.goto("/closeout");
+  await page.getByTestId("run-next-day").click();
+  await expect(page.getByTestId("session-bar")).toContainText("Day 2", { timeout: 30_000 });
+  await expect(page.getByTestId("session-bar")).toContainText(/truckfile v\d/);
 });

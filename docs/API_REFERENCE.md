@@ -111,6 +111,52 @@ All six return **503** if the dbt pipeline hasn't been run against the configure
 - `POST /runtime/sessions/{id}/recommendations/{action_id}/approve|dismiss` — copilot approvals (409 if not pending).
 - `POST /runtime/sessions/{id}/chat` `{message}` → `{reply, intent, actions, data, understood_by}`; `GET .../chat` returns the history.
 - `GET /runtime/sessions/{id}/search?q=` — a package, container (route) or associate.
+- `POST /runtime/sessions` with `{source: "next_day", mode, speed}` continues from the default session's close-out. Tomorrow is simulated from its final truckfile (revisions not yet learned still happen, revealed the next morning), carry-over and plan; 409 before the final truckfile is published. Session info carries `day`, `truckfile_version` and `next_day_ready`.
+- Chat replies (`POST .../chat`) carry `title`, `sections` (computed lines), `sources` (`{kind, title, clock}`), `llm_summary` (number-checked, `inferred`) and `llm_status` (`grounded | withheld | unavailable | skipped`). See ADR-0013.
+- `GET /runtime/sessions/{id}/map` — static geometry of the fictional delivery area (street grid, ring roads, radial highways, river and bridges, parks, neighbourhoods, route zones). Fetched once by the driver map.
+- `GET /runtime/sessions/{id}/drivers/{driver_id}/path` — that driver's road paths (home → station, station → zone, stop tour, return) and stops done; 404 if unknown.
+- `POST /runtime/sessions/{id}/notifications/{nid}/ack` and `POST .../notifications/ack-all` `{audience: supervisor|manager|dsp|all}` — acknowledge supervisor/manager/DSP notifications.
+- The state's `views` also carry `yard` (VSA), `staging_floor`, `aisle_plan`, `notifications` and `closeout`. New action kinds (bounded by `LEVER_LIMITS`): `restage_cart`, `direct_sweep`, `request_replacement_van`, `add_yard_marshal`, `check_ferry`, `draft_gtdr`, `replan_next_day`, `offer_vet` (≤12), `offer_vto` (≤12).
+
+### `/runtime` v2 additions (2026-11-13, ADR-0014/0015/0016)
+
+- `POST /runtime/sessions` accepts `scale` (0.5–3.0; volume, routes and labour scale together) and the `pitch_day` preset. Session info carries `scale` and `pitch`.
+- The state's `views` add the following (typed in `frontend/src/api/runtimeV2.ts`):
+  - **Inbound and sort:**
+    - `receive_v2`: per-cycle predicted dispatch, container-planned volume, a planned/unplanned status ladder, and linehauls with legs, issues, watch, group-by splits and containers;
+    - `induct_v2`: overall status by cycle, induct areas (automated/manual lines) and containers per linehaul;
+    - `stow_v2`: the stow breakdown per cluster and auto-divert fingers.
+  - **Package status:**
+    - `dwell_v2`: the canonical status tree by cycle and by delivery window;
+    - `ageing_v2`: forward/reverse leg, missing/lost reviews and scrubs.
+  - **Planning and people:**
+    - `plan_vs_actual`: 15-minute intervals, automation vs. manual, labour by group;
+    - `associate_performance`: induct/stow/pick by path, with the governance note;
+    - `shift_plan_v2`: pre-shift and next-day plans, VET/VTO opportunities, and the rotation.
+  - **Station controls and reference:**
+    - `cycles`: banner, cycle table and cycle actions;
+    - `settings`: values, editable keys, provenance and site profile;
+    - `work_items_v2`: summary and items, including `REC-<id>` agent recommendations;
+    - `metric_specs`: label, provenance, formula and unit;
+    - `chapters`: demo bookmarks.
+- Snapshot metrics carry `inputs` (the values in the calculation) and `target_max` (the upper Stow WIP threshold). New metric keys:
+  - `stow_wip_minutes`, `stow_fph`, `belt_run_time`, `total_volume`, `inc`;
+  - `missed_induct`, `induct_dwell`, `tasks_for_psa`, `pending_reinduct`;
+  - `misdivert_dpmo`, `network_missorts`, `fsaf_dpmo`, `spot_check_dpmo`, `quality`.
+  
+  `GET /station-ops/metric-definitions` reports `documented | observed | proposed`.
+- `POST /runtime/sessions/{id}/seek` `{minute}` jumps to a minute:
+  - forward runs with agents on reflexes only;
+  - backward replays the config plus every action taken before that minute.
+- `PATCH /runtime/sessions/{id}/settings` `{stow_wip_lower_min?, stow_wip_upper_min?, stow_wip_compliance_target?, induct_dwell_minutes?}` returns 422 if the values are invalid or the field is not editable.
+- `POST /runtime/sessions/{id}/work-items/{item_id}/complete|dismiss`. A `REC-<id>` item approves or dismisses that agent recommendation.
+- `GET /runtime/sessions/{id}/packages?group=&status=&column=&by=cycle|window` lists every package behind a status-tree count (`count == len(items)`).
+- `GET /runtime/sessions/{id}/report` returns the shift report (metrics, DEA/OTD analyses with replay impact, cycle actions, work items, tomorrow). It is flagged `simulated: true`.
+- `GET /runtime/sessions/{id}/search?q=` handles bulk package IDs (space/comma separated), container IDs (`GAYLORD_…`, `PALLET_…`, with timeline) and associate activity timelines.
+- **New action kinds** (bounded by `LEVER_LIMITS`):
+  - `force_induct` (≤30 min), `change_cycle`, `enable_cycle` (≤8 h);
+  - `rebalance_finger`, `approve_damaged`, `watch_trip`;
+  - `post_opportunity` (≤12 HC, `target` VET|VTO, `params.frame`), `close_window`, `rerun_rotation`.
 
 ## Interactive docs
 

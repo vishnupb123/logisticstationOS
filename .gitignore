@@ -51,3 +51,6 @@ ml/*
 # Reference screenshots of real station tooling — contain real employee
 # logins/IDs; NEVER commit (CLAUDE.md hard rule 1). Local learning only.
 images/
+# Owner-supplied v2 study material (real screenshots + site definitions).
+# Same rule: local learning only, never commit.
+V2/

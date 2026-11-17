@@ -40,6 +40,25 @@ LEVER_LIMITS: dict[str, float] = {
     "reassign_standby": 1,
     "notify_swipe_finish": 1,
     "start_scrub": 1,
+    "restage_cart": 1,
+    "direct_sweep": 1,
+    "request_replacement_van": 1,
+    "add_yard_marshal": 1,
+    "check_ferry": 1,
+    "draft_gtdr": 1,
+    "replan_next_day": 1,
+    "offer_vet": 12,
+    "offer_vto": 12,
+    # v2
+    "force_induct": 30,
+    "change_cycle": 1,
+    "enable_cycle": 8,
+    "rebalance_finger": 1,
+    "approve_damaged": 1,
+    "watch_trip": 1,
+    "post_opportunity": 12,
+    "close_window": 1,
+    "rerun_rotation": 1,
 }
 
 # (kind, amount, params) — a candidate is a list of these applied together.
@@ -86,6 +105,29 @@ _C = {
             ("add_stowers", 2, {}),
         ],
     ],
+    "induct_below_dynamic_target": [
+        [("open_induct_line", 1, {})],
+        [("open_induct_line", 1, {}), ("add_stowers", 2, {})],
+        [("extend_cutoff", 15, {})],
+    ],
+    "late_volume_at_pick_start": [
+        [("force_induct", 15, {})],
+        [("force_induct", 30, {})],
+        [("extend_cutoff", 15, {})],
+        [("extend_cutoff", 15, {}), ("force_induct", 15, {})],
+    ],
+    "induct_dwell_over_60": [
+        [("move_associates", 1, {"from_role": "stow", "to_role": "problem_solve"})],
+        [("move_associates", 2, {"from_role": "stow", "to_role": "problem_solve"})],
+    ],
+    "pending_reinduct_at_risk": [
+        [("move_associates", 1, {"from_role": "stow", "to_role": "problem_solve"})],
+        [("force_induct", 15, {})],
+    ],
+    "unplanned_surge": [
+        [("add_stowers", 2, {})],
+        [("open_induct_line", 1, {}), ("add_stowers", 2, {})],
+    ],
     "routes_at_risk": [
         [("add_pickers", 2, {})],
         [("add_pickers", 4, {})],
@@ -101,6 +143,22 @@ ADVISORY: dict[str, str] = {
         "Run a sort audit on the highest-missort aisles and re-brief temporary sorters; add a "
         "pre-pick missort sweep so uncaught missorts are recovered before routes are picked."
     ),
+    "belt_gap_lost_hours": (
+        "Walk the line with the most belt-gap minutes: clear jams at the loader, check carton "
+        "feed and label quality; keep a water spider on the dock so the belt never starves."
+    ),
+    "automation_no_read_spike": (
+        "Clean / re-align the automated line's scan tunnel and check label print quality; route "
+        "poor-label trailers to the manual line until the no-read rate recovers."
+    ),
+    "container_stuck": (
+        "Send the dock water spider to the stuck containers and induct them before newer ones "
+        "(first-in, first-out by container)."
+    ),
+    "opportunity_window_closing": (
+        "Decide whether to extend the sign-up window or accept the submissions now; post a new "
+        "opportunity for the remaining headcount if the frame is still short."
+    ),
     "scan_compliance_below_target": (
         "Inspect the induct scanner tunnel and label quality on the worst line and stage a "
         "dedicated problem-solve associate to shorten the no-read rework loop."
@@ -114,6 +172,7 @@ _LABELS = {
     "open_induct_line": "Open spare induct line",
     "priority_late_linehauls": "Prioritise late linehauls (yard + induct)",
     "move_associates": "Move {a:.0f} {from_role}→{to_role}",
+    "force_induct": "Force induct {a:.0f} min after pick start",
 }
 
 
@@ -230,6 +289,80 @@ def reflexes_for(risk, twin: StationOpsTwin, *, source: str) -> list[Interventio
                     source=source,
                 )
             )
+    elif risk.risk_type == "cart_misstaged":
+        for rid in ev.get("routes", []):
+            out.append(Intervention(kind="restage_cart", target=rid, at_minute=now, source=source))
+    elif risk.risk_type == "bag_left_in_aisle":
+        for aisle in ev.get("aisles", [])[:4]:
+            out.append(
+                Intervention(kind="direct_sweep", target=aisle, at_minute=now, source=source)
+            )
+    elif risk.risk_type == "van_grounded":
+        for rid in ev.get("routes", []):
+            out.append(
+                Intervention(
+                    kind="request_replacement_van", target=rid, at_minute=now, source=source
+                )
+            )
+    elif risk.risk_type == "vsa_queue":
+        out.append(Intervention(kind="add_yard_marshal", at_minute=now, source=source))
+    elif risk.risk_type == "truckfile_changed_since_plan":
+        out.append(Intervention(kind="replan_next_day", at_minute=now, source=source))
+    elif risk.risk_type == "next_day_staffing_gap":
+        co = twin.closeout
+        for rec in ev.get("recommendations", [])[:3]:
+            open_same = any(
+                o["status"] == "open" and o["type"] == rec["type"] and o["frame"] == rec["frame"]
+                for o in co.opportunities.items
+            )
+            if open_same:
+                continue
+            out.append(
+                Intervention(
+                    kind="post_opportunity",
+                    target=rec["type"],
+                    amount=min(LEVER_LIMITS["post_opportunity"], rec["headcount"]),
+                    params={"frame": rec["frame"]},
+                    at_minute=now,
+                    source=source,
+                )
+            )
+    elif risk.risk_type == "finger_full_bay":
+        out.append(
+            Intervention(
+                kind="rebalance_finger", target=ev.get("finger"), at_minute=now, source=source
+            )
+        )
+    elif risk.risk_type == "damaged_pending_approval":
+        out.append(Intervention(kind="approve_damaged", at_minute=now, source=source))
+    elif risk.risk_type == "unload_sequence_conflict":
+        out.append(
+            Intervention(
+                kind="resequence_unload", target=ev.get("trip"), at_minute=now, source=source
+            )
+        )
+    elif risk.risk_type == "late_volume_at_pick_start" and ev.get("phase") == "after":
+        out.append(Intervention(kind="change_cycle", at_minute=now, source=source))
+        if twin.next_cycle_until is None:
+            out.append(Intervention(kind="enable_cycle", amount=4, at_minute=now, source=source))
+    elif risk.risk_type == "rotation_violation":
+        out.append(Intervention(kind="rerun_rotation", at_minute=now, source=source))
+    elif risk.risk_type == "network_missort_backlog":
+        frm = "pick" if twin.pick_started else "stow"
+        out.append(
+            Intervention(
+                kind="move_associates",
+                target="problem_solve",
+                amount=1,
+                params={"from_role": frm, "to_role": "problem_solve"},
+                at_minute=now,
+                source=source,
+            )
+        )
+    elif risk.risk_type == "ferry_check_due":
+        out.append(Intervention(kind="check_ferry", at_minute=now, source=source))
+    elif risk.risk_type == "gtdr_open":
+        out.append(Intervention(kind="draft_gtdr", at_minute=now, source=source))
     elif risk.risk_type == "hv_backlog":
         frm = "pick" if twin.pick_started else "problem_solve"
         out.append(

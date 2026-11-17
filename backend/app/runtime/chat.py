@@ -1,4 +1,14 @@
-"""Station Assistant — chat over the live session.
+"""Station Assistant — retrieval + analysis + local LLM + agent coordination
+over the live session.
+
+Questions about the shift ("why did DEA drop?", "what's the status of the
+ferries?", "how many VETs were accepted?", "volume for tomorrow?") are answered
+by (1) a deterministic analysis of the live twin (app/runtime/explain.py:
+root causes, decisions taken and their simulated impact), (2) retrieval over a
+shift knowledge base rebuilt from live state (app/runtime/knowledge.py), and
+(3) optionally a local-LLM summary grounded in those numbered facts — whose
+numbers are checked against the facts and dropped if any are unsupported.
+Follow-ups ("why?", "what did you do about it?") reuse the last topic.
 
 Understands two kinds of message:
 - **questions** ("how's stow WIP?", "which drivers are late?", "where is
@@ -17,6 +27,7 @@ the message into the same closed set of intents (schema-restricted, ADR-0008)
 """
 
 import re
+import time
 from typing import Literal
 
 from pydantic import BaseModel
@@ -25,6 +36,8 @@ from app.agents.station_ops.counterfactual import applied_log, belief_configs, e
 from app.agents.station_ops.detectors import AGENT_LABEL, detect_risks
 from app.agents.station_ops.mitigations import Candidate
 from app.core.llm.base import LLMProvider, LLMProviderError
+from app.runtime import explain, explain_v2
+from app.runtime.knowledge import Index, build_corpus
 from app.runtime.session import StationSession
 from app.simulation.station_ops.model import Intervention
 from app.simulation.station_ops.snapshot import METRIC_DEFINITIONS, build_snapshot
@@ -39,6 +52,11 @@ Intent = Literal[
     "linehauls",
     "labor",
     "high_value",
+    "tomorrow",
+    "floor",
+    "yard",
+    "explain",
+    "ask",
     "fix_wip",
     "protect_dea",
     "protect_otd",
@@ -84,6 +102,114 @@ class ChatReply(BaseModel):
     actions: list[dict] = []
     data: dict = {}
     understood_by: Literal["rules", "llm", "none"] = "rules"
+    #: Rich answers: a title, sections of computed lines, and cited sources.
+    title: str | None = None
+    sections: list[dict] = []
+    sources: list[dict] = []
+    #: Local-LLM summary of the facts (evidence category: inferred), only when
+    #: every number in it is found in the facts; otherwise withheld.
+    llm_summary: str | None = None
+    llm_status: Literal["grounded", "withheld", "unavailable", "skipped"] = "skipped"
+
+
+class GroundedAnswer(BaseModel):
+    """What the LLM may return: prose over the numbered facts, citing them."""
+
+    answer: str
+    cited_facts: list[int] = []
+    category: Literal["inferred"] = "inferred"
+
+
+_NUM = re.compile(r"\d{1,2}:\d{2}|\d[\d,]*(?:\.\d+)?")
+
+
+def _numbers(text: str) -> set[str]:
+    out = set()
+    for m in _NUM.findall(text):
+        if ":" in m:
+            h, mm = m.split(":")
+            out.add(f"t{int(h)}:{mm}")
+        else:
+            v = float(m.replace(",", ""))
+            out.add(f"{v:g}")
+    return out
+
+
+def grounded(answer: str, facts: list[str]) -> bool:
+    """Every number the LLM wrote must appear in the facts (times exactly,
+    values to the same digits after rounding); small counts ≤ 2 are allowed."""
+    have = set().union(*(_numbers(f) for f in facts)) if facts else set()
+    vals = {float(x) for x in have if not x.startswith("t")}
+    for n in _numbers(answer):
+        if n in have:
+            continue
+        if n.startswith("t"):
+            return False
+        v = float(n)
+        if v <= 2 or any(abs(v - h) < 0.051 or abs(v - round(h)) < 1e-9 for h in vals):
+            continue
+        return False
+    return True
+
+
+_TOPICS = (
+    ("dea", r"\b(dea|delivery estimate|rollover|rolled over|roll over|missed packages?)\b"),
+    ("otd", r"\b(otd|on.time depart\w*|departures?|left late|late routes?)\b"),
+    # v2 topics (HANDOFF_V2 §10.1) — specific before generic
+    (
+        "labor_plan",
+        r"\b(covered|coverage|by hour|hourly|headcount by|staffed between|short between)\b",
+    ),
+    ("rotation", r"\b(rotation|disallowed|trained paths?|can'?t do|cannot do)\b"),
+    (
+        "quality",
+        r"\b(which line|lines? hurt|hurt us|no.?reads?|multi.?reads?|misapplied|lost hours|downtime|dpmo|quality)\b",
+    ),
+    ("stow_wip", r"\b(stow ?wip|wip|out of band)\b"),
+    ("fingers", r"\b(fingers?|full bays?|bays? full)\b"),
+    ("containers", r"\b(gaylords?|pallets?|containers?)\b"),
+    ("receive", r"\b(unplanned|planned volume|manifest\w*|receive)\b"),
+    (
+        "plan_actual",
+        r"\b(on plan|plan vs\.? actual|planned vs|vs\.? plan|behind plan|ahead of plan)\b",
+    ),
+    ("work_items", r"\b(work items?|expired|to.?do list|open tasks?|pending tasks?)\b"),
+    (
+        "ageing",
+        r"\b(ageing|aging|missing packages?|lost packages?|marked (as )?(missing|lost)|scrubs?)\b",
+    ),
+    (
+        "cycles",
+        r"\b(pick start|cycles?|force.?induct\w*|change.?cycle|wrong.?cycle|induct (is |was )?blocked)\b",
+    ),
+    (
+        "trucks",
+        r"\b(truck ?file|trucks?|ferr(y|ies)|linehauls?|trailers?|sailings?|gtdrs?|ports?)\b",
+    ),
+    (
+        "labor",
+        r"\b(vets?|vtos?|associates?|headcount|labou?r|staff\w*|call(?:ed)?.?outs?|absent\w*)\b",
+    ),
+    ("tomorrow", r"\b(tomorrow|next day|next cycle|plan for|volume for)\b"),
+    ("decisions", r"\b(decisions?|agents? (do|did)|what did (you|the agents)|actions taken)\b"),
+    ("shift", r"\b(shift|today|the day|overall|how did (it|we|the day) go)\b"),
+)
+_QUESTION = re.compile(
+    r"^(why|how|what|which|when|who|explain|tell me|describe|give me|show me|summari[sz]e|anything|"
+    r"walk me|break ?down|any|is|are|did|was|were|status)\b|\b(why|cause[sd]?|reason|explain|"
+    r"details?|status|update|breakdown)\b"
+)
+_FOLLOWUP = re.compile(
+    r"^(why\??|and\b.*|what (did|have) (you|we|the agents) do.*|what was done.*|how come\??|"
+    r"tell me more|more( details)?|go on|details\??|what else\??)$"
+)
+
+
+def topic_of(t: str) -> str | None:
+    for name, rx in _TOPICS:
+        if re.search(rx, t):
+            return name
+    return None
 
 
 class LLMIntent(BaseModel):
@@ -95,6 +221,9 @@ class LLMIntent(BaseModel):
         "linehauls",
         "labor",
         "high_value",
+        "tomorrow",
+        "floor",
+        "yard",
         "fix_wip",
         "protect_dea",
         "protect_otd",
@@ -144,13 +273,36 @@ def parse(msg: str) -> tuple[Intent, dict]:  # noqa: C901
     ):
         return "protect_dea", {}
     if re.search(
+        r"\b(restage|sweep|replacement|replace|marshals?|check ferr\w*|re-?plan|offer|draft|"
+        r"gtdrs? file|file gtdrs?|force.?induct|change (the )?cycle|enable (the )?(next )?cycle|"
+        r"rebalance|approve damaged|post (a )?(vet|vto)|close (the )?(sign.?up )?windows?|"
+        r"re-?run (the )?rotation|watch)\b",
+        t,
+    ) and not re.search(r"^(how|what|when|why|is|are|did|show)\b", t):
+        return "action", {"text": t, "route": route}
+    if re.search(
         r"\b(prioriti[sz]e|sideline|unsideline|move|notify|remind|standby|backup|vet|call in|"
         r"add|open|extend|scrub|resequence|unload first)\b",
         t,
     ):
         return "action", {"text": t, "route": route}
+    topic = topic_of(t)
+    if _FOLLOWUP.match(t) and not (topic and topic != "decisions"):
+        return "explain", {"topic": topic, "followup": True, "text": t}
     if route:
         return "route_status", {"route": route}
+    if topic and _QUESTION.search(t):
+        return "explain", {"topic": topic, "text": t}
+    if re.search(
+        r"\b(tomorrow|next day|truck ?file|vto|gtdrs?|close-?out|roster|rotation|scrubs?)\b", t
+    ):
+        return "tomorrow", {}
+    if re.search(r"\b(vsa|grounded|yard marshals?|safety audit|replacement vans?)\b", t):
+        return "yard", {}
+    if re.search(
+        r"(misstag|wrong staging|left behind|sweep|cluster transfer|notifications?|floor)", t
+    ):
+        return "floor", {}
     if re.search(r"\b(risks?|issues?|problems?|alerts?|wrong|attention)\b", t):
         return "risks", {}
     if re.search(r"\b(drivers?|dsps?|vans?|swipes?)\b", t):
@@ -168,6 +320,10 @@ def parse(msg: str) -> tuple[Intent, dict]:  # noqa: C901
         return "metric", {"metric": "wip"}
     if re.search(r"\b(status|summary|how are we|how is|overview|doing|update)\b", t):
         return "summary", {}
+    if topic:
+        return "explain", {"topic": topic, "text": t}
+    if _QUESTION.search(t):
+        return "ask", {"text": t}
     return "unknown", {}
 
 
@@ -192,8 +348,12 @@ class StationAssistant:
                     intent, understood = got.intent, "llm"
             except LLMProviderError:
                 pass
+        if intent == "unknown":
+            intent, ent = "ask", {"text": message.lower()}
         reply = getattr(self, f"_{intent}")(message, ent)
-        reply.understood_by = understood if intent != "unknown" else "none"
+        reply.understood_by = understood
+        if reply.intent == "explain" and reply.data.get("topic"):
+            self.s.chat_context["topic"] = reply.data["topic"]
         self.s.chat_history.append({"role": "user", "text": message})
         self.s.chat_history.append(
             {
@@ -201,6 +361,11 @@ class StationAssistant:
                 "text": reply.reply,
                 "intent": reply.intent,
                 "actions": reply.actions,
+                "title": reply.title,
+                "sections": reply.sections,
+                "sources": reply.sources,
+                "llm_summary": reply.llm_summary,
+                "llm_status": reply.llm_status,
             }
         )
         return reply
@@ -228,6 +393,10 @@ class StationAssistant:
                 '"standby for R-045" · "remind drivers to swipe" · "VET 3 stowers" · '
                 '"move 1 problem solve to stow" · "open spare line" · "extend pick start 15" · '
                 '"start in-station scrub"\n'
+                '• Floor & yard: "restage R-012" · "sweep aisle A05" · "replacement van for R-031" '
+                '· "add a yard marshal" · "any misstaged carts?" · "VSA status"\n'
+                '• After dispatch: "plan for tomorrow" · "check ferry" · "re-plan tomorrow" · '
+                '"offer VET to 3" · "offer VTO to 2" · "draft GTDRs"\n'
                 '• "what if we VET 4 stowers?" — simulated, nothing applied\n'
                 '• "simulate a jam on line 2" · "inject traffic incident south" · "pause" · '
                 '"speed 5" · "approve all"'
@@ -373,42 +542,10 @@ class StationAssistant:
         return ChatReply(intent="drivers", reply=txt, data={"late": [r["route_id"] for r in late]})
 
     def _linehauls(self, msg, ent) -> ChatReply:
-        s = self._snap()
-        late = [t for t in s.trips if t["delay_minutes"] > 0 and t["status"] == "in_transit"]
-        txt = (
-            f"{s.inbound['trips_arrived']}/{s.inbound['trips_planned']} linehauls unloaded, "
-            f"{s.inbound['trips_in_yard']} waiting in the yard. "
-        )
-        txt += (
-            "Delayed and still in transit: "
-            + "; ".join(
-                f"{t['trip_id']} ({t['origin']}{' ferry ' + t['ferry_sailing'] if t['via_ferry'] else ''}) "
-                f"+{t['delay_minutes']:.0f} min → ETA {t['eta']}"
-                + (" — after pick start" if t["arrives_after_pick_start"] else "")
-                for t in late
-            )
-            if late
-            else "No delayed linehauls in transit."
-        )
-        return ChatReply(intent="linehauls", reply=txt)
+        return self._explain(msg, {"topic": "trucks", "text": msg.lower()})
 
     def _labor(self, msg, ent) -> ChatReply:
-        s = self._snap()
-        lab = s.labor
-        idle = []
-        with self.s.lock:
-            now = self.s.twin.env.now
-            for a in self.s.twin.assocs:
-                if a.present and a.task == "idle" and a.idle_since and now - a.idle_since > 600:
-                    idle.append(f"{a.login} ({a.role}, {int((now - a.idle_since) / 60)} min)")
-        txt = (
-            f"{lab['present']} associates on the floor ({lab['absent']} absent), by role: "
-            + ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in lab["by_role"].items())
-            + f". Flex (VET) pool remaining: {lab['flex_remaining']}."
-        )
-        if idle:
-            txt += " Idle >10 min: " + ", ".join(idle[:6]) + "."
-        return ChatReply(intent="labor", reply=txt, data=lab)
+        return self._explain(msg, {"topic": "labor", "text": msg.lower()})
 
     def _high_value(self, msg, ent) -> ChatReply:
         with self.s.lock:
@@ -431,6 +568,192 @@ class StationAssistant:
         )
 
     # --- requests --------------------------------------------------------------------
+
+    # --- explain (analysis + retrieval + grounded LLM) -------------------------------
+
+    def _replay(self) -> dict | None:
+        """Same day without any decisions — cached per (decisions so far)."""
+        with self.s.lock:
+            tw = self.s.twin
+            if not tw.done:
+                return None
+            cfg, ivs, n = explain.replay_inputs(tw)
+            key = (n, len(ivs))
+            cache = self.s.chat_context.get("replay")
+        if cache and cache[0] == key:
+            return cache[1]
+        out = explain.replay_without_decisions(cfg, ivs)
+        self.s.chat_context["replay"] = (key, out)
+        return out
+
+    def _analysis(self, topic: str, text: str) -> explain.Analysis:
+        replay = self._replay() if topic in ("dea", "otd") else None
+        with self.s.lock:
+            tw, loop = self.s.twin, self.s.loop
+            if topic == "dea":
+                return explain.dea(tw, loop, replay)
+            if topic == "otd":
+                return explain.otd(tw, loop, replay)
+            if topic == "trucks":
+                return explain.trucks(tw, text)
+            if topic == "labor":
+                return explain.labor(tw)
+            if topic == "tomorrow":
+                return explain.tomorrow(tw)
+            v2 = {
+                "labor_plan": lambda: explain_v2.labor_plan(tw, text),
+                "rotation": lambda: explain_v2.rotation(tw, text),
+                "quality": lambda: explain_v2.quality(tw),
+                "stow_wip": lambda: explain_v2.stow_wip(tw, text),
+                "fingers": lambda: explain_v2.fingers(tw),
+                "containers": lambda: explain_v2.containers(tw),
+                "receive": lambda: explain_v2.receive(tw),
+                "plan_actual": lambda: explain_v2.plan_actual(tw, text),
+                "work_items": lambda: explain_v2.work_items(tw),
+                "ageing": lambda: explain_v2.ageing(tw),
+                "cycles": lambda: explain_v2.cycles(tw),
+            }
+            if topic in v2:
+                return v2[topic]()
+            if topic == "decisions":
+                return explain.decisions_summary(tw, loop)
+            return explain.shift(tw, loop)
+
+    def _retrieve(self, query: str, k: int = 6) -> list:
+        with self.s.lock:
+            docs = build_corpus(self.s.twin, self.s.loop)
+        return Index(docs).search(query, k=k)
+
+    def _summarise(self, question: str, facts: list[str]) -> tuple[str | None, str]:
+        if self.llm is None:
+            return None, "unavailable"
+        numbered = "\n".join(f"[{i + 1}] {f}" for i, f in enumerate(facts[:40]))
+        try:
+            got = self.llm.complete_structured(
+                system_prompt=(
+                    "You are the shift assistant of a delivery station. Answer the manager's "
+                    "question in 2-5 plain sentences using ONLY the numbered facts. Explain causes "
+                    "and what was done about them. Never introduce a number that is not in the "
+                    "facts. Cite the fact numbers you used. Glossary: DEA = Delivery Estimate "
+                    "Accuracy; OTD = On-Time Departure; VET = Voluntary Extra Time; VTO = "
+                    "Voluntary Time Off; GTDR = Global Trailer Dock and Release; OFD = out for "
+                    "delivery; SPR = shipments per route; pp = percentage points. Reply only "
+                    "with JSON."
+                ),
+                user_prompt=f"Question: {question}\n\nFacts:\n{numbered}",
+                response_model=GroundedAnswer,
+                timeout_seconds=40,
+            )
+        except LLMProviderError:
+            return None, "unavailable"
+        ans = got.answer.strip()
+        ok = (
+            len(ans) > 20
+            and grounded(ans, facts)
+            and all(1 <= i <= len(facts) for i in got.cited_facts)
+        )
+        return (ans, "grounded") if ok else (None, "withheld")
+
+    def _explain(self, msg, ent) -> ChatReply:
+        last = self.s.chat_context.get("topic")
+        topic = ent.get("topic") or last or "shift"
+        if ent.get("followup") and topic == "decisions" and last not in (None, "decisions"):
+            topic = last  # "what did you do about it?" → the decisions on the last topic
+        t0 = time.time()
+        a = self._analysis(topic, ent.get("text", msg.lower()))
+        hits = self._retrieve(msg, k=5)
+        # the LLM sees only the computed analysis (small models get confused by
+        # raw records); retrieved records are shown to the user as sources
+        summary, status = self._summarise(msg, a.facts()[:30])
+        sources = [s.model_dump() for s in a.sources] + [
+            {"kind": h.kind, "title": h.title, "clock": h.clock} for h in hits
+        ]
+        return ChatReply(
+            intent="explain",
+            title=a.title,
+            reply=a.text(),
+            sections=[s.model_dump() for s in a.sections],
+            sources=sources,
+            llm_summary=summary,
+            llm_status=status,
+            data={"topic": topic, "headline": a.headline, "ms": round((time.time() - t0) * 1000)},
+        )
+
+    def _ask(self, msg, ent) -> ChatReply:
+        """Anything else about the shift: retrieve, then summarise (grounded)."""
+        hits = self._retrieve(msg, k=8)
+        if not hits:
+            return ChatReply(
+                intent="ask",
+                reply="I couldn't find anything about that in today's shift record. "
+                + self._help(msg, ent).reply,
+            )
+        facts = [h.text for h in hits]
+        summary, status = self._summarise(msg, facts)
+        lines = [f"[{h.clock or '—'}] {h.text}" for h in hits]
+        return ChatReply(
+            intent="ask",
+            title="From the shift record",
+            reply="Here's what the shift record says:\n" + "\n".join(f"• {x}" for x in lines),
+            sections=[{"title": "Most relevant records", "lines": lines}],
+            sources=[{"kind": h.kind, "title": h.title, "clock": h.clock} for h in hits],
+            llm_summary=summary,
+            llm_status=status,
+        )
+
+    def _tomorrow(self, msg, ent) -> ChatReply:
+        return self._explain(msg, {"topic": "tomorrow", "text": msg.lower()})
+
+    def _floor(self, msg, ent) -> ChatReply:
+        with self.s.lock:
+            tw = self.s.twin
+            mis = [
+                f"{r.route_id} cart in {r.misstaged_at} (belongs {r.staging_location})"
+                for r in tw.routes
+                if r.misstaged_at and r.misstage_fixed_at is None
+            ]
+            fixed = sum(1 for r in tw.routes if r.misstage_fixed_at)
+            flagged = sum(
+                1
+                for p in tw.pkgs
+                if p.status == "left_behind" and p.left_reason == "bag_not_loaded"
+            )
+            swept, ct = tw.counters["sweep_staged"], tw.counters["cluster_transfer"]
+            unacked = sum(
+                1 for n in tw.notifications if not n["ack"] and n["audience"] == "supervisor"
+            )
+        reply = (
+            ("Misstaged carts now: " + "; ".join(mis) + ". ")
+            if mis
+            else "No misstaged carts right now. "
+        ) + (
+            f"{fixed} wrong staging scan(s) corrected today. {flagged} flagged package(s) still in "
+            f"aisles; sweep has staged {swept} left-behind package(s) back to carts and "
+            f"{ct} went to cluster transfer for the next cycle. {unacked} unacknowledged "
+            "supervisor notification(s)."
+        )
+        return ChatReply(intent="floor", reply=reply)
+
+    def _yard(self, msg, ent) -> ChatReply:
+        with self.s.lock:
+            from app.simulation.station_ops.views import yard
+
+            y = yard(self.s.twin)
+        g = [r for r in y["rows"] if r["state"] == "grounded"]
+        reply = (
+            f"{y['marshals']} yard marshal(s); {y['audited']} vans audited — {y['passed']} passed, "
+            f"{y['minor_fixed']} fixed on site, {y['grounded']} grounded; {y['queue']} in the VSA "
+            f"queue (booked {y['booked_ahead_minutes']} min ahead). Spare vans: "
+            + ", ".join(f"{k} {v}" for k, v in y["spare_vans"].items())
+            + "."
+        )
+        if g:
+            reply += " Grounded now: " + "; ".join(
+                f"{r['route_id']} ({r['defect']}) — "
+                + (f"{r['van_request']} ETA {r['van_eta']}" if r["van_request"] else "no van yet")
+                for r in g
+            )
+        return ChatReply(intent="yard", reply=reply)
 
     def _goal(self, risk_type: str, label: str, intent: Intent) -> ChatReply:
         a = self.s.loop.handle_goal(self.s.twin, risk_type, label)
@@ -552,6 +875,65 @@ class StationAssistant:
 
     def _parse_action(self, t: str, route: str | None) -> Intervention | None:  # noqa: C901
         n = _num(t, 1)
+        if re.search(r"force.?induct", t):
+            return Intervention(kind="force_induct", amount=min(30, max(5, _num(t, 15))))
+        if re.search(r"change (the )?cycle", t):
+            return Intervention(kind="change_cycle")
+        if re.search(r"enable (the )?(next )?cycle", t):
+            return Intervention(kind="enable_cycle", amount=min(8, max(1, _num(t, 4))))
+        if "rebalance" in t:
+            f = re.search(r"finger[- ]?([ab])", t)
+            return Intervention(
+                kind="rebalance_finger", target=f"FINGER-{f.group(1).upper()}" if f else None
+            )
+        if "approve damaged" in t:
+            return Intervention(kind="approve_damaged")
+        m = re.search(r"post (?:a )?(vet|vto)", t)
+        if m:
+            frame = next(
+                (w.name for w in self.s.twin.config.labor_plan.work_groups if w.name.lower() in t),
+                None,
+            )
+            return Intervention(
+                kind="post_opportunity",
+                target=m.group(1).upper(),
+                amount=min(12, max(1, n)),
+                params={"frame": frame} if frame else {},
+            )
+        if re.search(r"close (the )?(sign.?up )?windows?", t):
+            return Intervention(kind="close_window")
+        if re.search(r"re-?run (the )?rotation", t):
+            return Intervention(kind="rerun_rotation")
+        if "watch" in t:
+            trip = re.search(r"\b(lh-[a-z0-9]+)\b", t)
+            if trip:
+                return Intervention(kind="watch_trip", target=trip.group(1).upper())
+        if "restage" in t and route:
+            return Intervention(kind="restage_cart", target=route)
+        if "sweep" in t:
+            aisle = re.search(r"\b([ab])\s?-?(\d{1,2})\b", t)
+            if aisle:
+                return Intervention(
+                    kind="direct_sweep", target=f"{aisle.group(1).upper()}{int(aisle.group(2)):02d}"
+                )
+            if route:
+                r = self.s.twin.route_by_id(route)
+                if r:
+                    return Intervention(kind="direct_sweep", target=r.aisle)
+        if ("replacement" in t or "replace" in t or "spare van" in t) and route:
+            return Intervention(kind="request_replacement_van", target=route)
+        if "marshal" in t:
+            return Intervention(kind="add_yard_marshal")
+        if "ferr" in t and "check" in t:
+            return Intervention(kind="check_ferry")
+        if re.search(r"re-?plan", t):
+            return Intervention(kind="replan_next_day")
+        if "gtdr" in t:
+            return Intervention(kind="draft_gtdr")
+        if "offer" in t and "vto" in t:
+            return Intervention(kind="offer_vto", amount=min(12, max(1, n)))
+        if "offer" in t and "vet" in t:
+            return Intervention(kind="offer_vet", amount=min(12, max(1, n)))
         if "inject" in t or "simulate" in t:
             kind = (
                 "line_jam"

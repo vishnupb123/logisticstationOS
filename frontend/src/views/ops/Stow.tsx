@@ -3,6 +3,8 @@
 // fill grid, and the problem-solve queue with rebalancing levers.
 import type { LiveState } from "../../api/runtime";
 import { pctv } from "../../api/runtime";
+import type { Finger, StowCluster } from "../../api/runtimeV2";
+import { DataUpdated } from "../../components/DataUpdated";
 import { Card } from "../../components/Card";
 import { type Column, DataTable } from "../../components/DataTable";
 import { DataSourceBadge } from "../../components/DataSourceBadge";
@@ -50,8 +52,11 @@ function StowBody({ s }: { s: LiveState }) {
         <ActButton action={{ kind: "move_associates", target: "problem_solve", amount: 1, params: { from_role: "stow", to_role: "problem_solve" } }} label="Move 1 stow → problem solve" />
         <ActButton action={{ kind: "open_induct_line" }} label="Open spare induct line" />
       </div>
-      <Card title="Stow buffers">
+      <StowBreakdown s={s} />
+      <Fingers s={s} />
+      <Card title="Stow buffers (aisle groups)">
         <DataTable testId="stow-buffers" columns={cols} rows={s.views.stow_buffers} rowKey={(b) => b.buffer} maxHeight={260} />
+        <DataUpdated clock={snap.clock} />
       </Card>
       <Card title="Aisle bay fill">
         <div className="cluster-grid" data-testid="aisle-grid">
@@ -73,6 +78,90 @@ function StowBody({ s }: { s: LiveState }) {
         </div>
       </Card>
     </div>
+  );
+}
+
+const pct = (v: number | null | undefined, d = 1) => pctv(v, d);
+
+function StowBreakdown({ s }: { s: LiveState }) {
+  const rows = s.views.stow_v2.clusters;
+  const cols: Column<StowCluster>[] = [
+    { key: "cluster", label: "Cluster" },
+    { key: "planned", label: "Planned", num: true },
+    { key: "arrived", label: "Arrived", num: true },
+    { key: "inducted", label: "Inducted", num: true },
+    { key: "stow_buffered", label: "Stow buffered", num: true },
+    { key: "stowed", label: "Stowed", num: true },
+    { key: "stow_plan", label: "Stow / plan", num: true, render: (c) => pct(c.stow_plan) },
+    { key: "ps", label: "PS", num: true },
+    { key: "jackpot_buffered", label: "Jackpot buffered", num: true },
+    { key: "unopened_bags", label: "Unopened bags", num: true },
+    { key: "minutes_of_work", label: "Minutes of work", num: true, value: (c) => c.minutes_of_work ?? "—" },
+    { key: "stow_rate", label: "Stow rate (/h)", num: true },
+    { key: "scan_compliance", label: "Scan comp.", num: true, render: (c) => pct(c.scan_compliance, 2) },
+    { key: "active_stowers", label: "Active stowers", num: true },
+  ];
+  return (
+    <Card title="Stow breakdown per cluster">
+      <DataTable testId="stow-clusters" columns={cols} rows={rows} rowKey={(c) => c.cluster} maxHeight={320} />
+      <DataUpdated clock={s.snapshot.clock} />
+    </Card>
+  );
+}
+
+function Fingers({ s }: { s: LiveState }) {
+  const rows = s.views.stow_v2.fingers;
+  const cols: Column<Finger>[] = [
+    { key: "machine", label: "Machine" },
+    {
+      key: "status",
+      label: "Status",
+      render: (f) => (
+        <>
+          <Pill value={f.status === "Active" ? "running" : "down"} label={f.status} />
+          {f.full_bay && <> <Pill value="jam" label="Full bay" /></>}
+          {f.rebalanced_to && <span className="muted"> → {f.rebalanced_to}</span>}
+        </>
+      ),
+    },
+    { key: "clusters", label: "Clusters", value: (f) => f.clusters.join(", ") },
+    {
+      key: "buffer",
+      label: "Full bay",
+      num: true,
+      render: (f) => (
+        <span title={`${f.full_bay_events} full-bay event(s) today`}>
+          {f.buffer}/{f.bay_capacity}
+        </span>
+      ),
+    },
+    { key: "jackpot_rate", label: "Jackpot rate", num: true, render: (f) => pct(f.jackpot_rate, 2) },
+    { key: "no_read_rate", label: "No-read rate", num: true, render: (f) => pct(f.no_read_rate, 2) },
+    { key: "current_volume", label: "Current volume", num: true },
+    { key: "pct_station_volume", label: "% station volume", num: true, render: (f) => pct(f.pct_station_volume, 0) },
+    { key: "avg_pph", label: "Avg PPH", num: true },
+    {
+      key: "act",
+      label: "",
+      render: (f) => <ActButton action={{ kind: "rebalance_finger", target: f.machine }} label="Rebalance" testId={`rebalance-${f.machine}`} />,
+    },
+  ];
+  return (
+    <Card title="Stow buffer (fingers)">
+      <DataTable
+        testId="stow-fingers"
+        columns={cols}
+        rows={rows}
+        rowKey={(f) => f.machine}
+        maxHeight={320}
+        rowClass={(f) => (f.status === "Down" ? "row-risk" : f.full_bay ? "row-warn" : undefined)}
+      />
+      <p className="muted" style={{ fontSize: 12 }}>
+        A full bay diverts to the jackpot. Rebalance points the finger's clusters at the least-loaded finger (container
+        builders follow).
+      </p>
+      <DataUpdated clock={s.snapshot.clock} />
+    </Card>
   );
 }
 

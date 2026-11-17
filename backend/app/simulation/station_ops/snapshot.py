@@ -100,12 +100,27 @@ METRIC_DEFINITIONS: dict[str, dict] = {
     },
 }
 
+# v2: the documented / observed definitions from the metric engine override
+# v1's proposed ones (ADR-0014).
+from app.simulation.station_ops.metrics import SPECS as _SPECS  # noqa: E402
+
+for _k, _v in _SPECS.items():
+    METRIC_DEFINITIONS[_k] = {
+        "label": _v["label"],
+        "status": _v["status"],
+        "formula": _v["formula"],
+    }
+
 
 class Metric(BaseModel):
     key: str
     value: float | None
     target: float | None
     unit: Literal["ratio", "count", "per_hour", "minutes", "hours", "dpmo"]
+    #: Upper threshold for banded metrics (Stow WIP).
+    target_max: float | None = None
+    #: The values that went into the calculation ("How this is calculated").
+    inputs: dict = {}
 
 
 class Alert(BaseModel):
@@ -119,7 +134,13 @@ class StationOpsSnapshot(BaseModel):
     minute: float
     clock: str
     phase: Literal[
-        "pre_shift", "inbound_induct_stow", "pick_stage", "depart", "on_road", "complete"
+        "pre_shift",
+        "inbound_induct_stow",
+        "pick_stage",
+        "depart",
+        "closeout",
+        "on_road",
+        "complete",
     ]
     done: bool
     day_complete: bool
@@ -152,6 +173,7 @@ STATUSES = (
     "problem_solve",
     "hv_pending_scan_in",
     "hv_in_cage",
+    "stow_buffered",
     "pending_stow",
     "stowing",
     "jackpot",
@@ -160,7 +182,12 @@ STATUSES = (
     "staged",
     "on_road",
     "rolled_over",
+    "next_cycle",
+    "held_wrong_cycle",
+    "missed_induct",
+    "pending_approval",
     "left_behind",
+    "cluster_transfer",
     "held_damaged",
     "cancelled_inbound",
 )
@@ -188,7 +215,13 @@ def project_routes(twin: StationOpsTwin) -> dict[int, float]:
             1
             for i in r.packages
             if twin.pkgs[i].status
-            not in ("rolled_over", "left_behind", "cancelled_inbound", "held_damaged")
+            not in (
+                "rolled_over",
+                "left_behind",
+                "cluster_transfer",
+                "cancelled_inbound",
+                "held_damaged",
+            )
         )
         bags = max(1, -(-n // o.packages_per_bag))
         carts = max(1, -(-bags // o.bags_per_cart))
@@ -320,15 +353,13 @@ def build_snapshot(twin: StationOpsTwin, frame: int) -> StationOpsSnapshot:  # n
         )
 
     k = twin.counters
-    window_end = min(twin.cutoff, now)
-    lost_s = 0.0
-    for _ln, s, e, _why in twin.line_down_windows:
-        lost_s += max(0.0, min(e, window_end) - max(s, c.induct.start_minute * 60))
-    lost_pkgs = lost_s / 3600 * c.induct.rate_pph_per_line
+    from app.simulation.station_ops import metrics as engine
+
+    m2 = engine.compute(twin)
     defects = k["no_read"] + k["multi_read"] + k["misapplied_label"]
     stowers = twin.active("stow")
     stowed_hour = twin.rate_last_hour(twin._stowed_times)
-    induct_fph = twin.rate_last_hour(twin._inducted_times)
+    induct_fph = m2["induct_fph"]["value"]
 
     tol = c.dispatch.otd_tolerance_minutes * 60
     projected = project_routes(twin)
@@ -347,11 +378,25 @@ def build_snapshot(twin: StationOpsTwin, frame: int) -> StationOpsSnapshot:  # n
     misses = sum(
         1
         for p in today
-        if p.status in ("rolled_over", "left_behind", "cancelled_inbound", "held_damaged")
+        if p.status
+        in (
+            "rolled_over",
+            "next_cycle",
+            "held_wrong_cycle",
+            "left_behind",
+            "cluster_transfer",
+            "cancelled_inbound",
+            "held_damaged",
+        )
     )
     known_misses = misses + not_attempted
     if twin.done:
-        known_misses += sum(1 for p in today if p.status == "pending_receive")
+        known_misses += sum(
+            1
+            for p in today
+            if p.status
+            in ("pending_receive", "missed_induct", "pending_approval", "problem_solve", "jackpot")
+        )
     delivered_now = sum(1 for p in today if p.attempt_at and p.attempt_at <= now and p.delivered)
     failed_now = sum(
         1 for p in today if p.attempt_at and p.attempt_at <= now and p.delivered is False
@@ -398,32 +443,22 @@ def build_snapshot(twin: StationOpsTwin, frame: int) -> StationOpsSnapshot:  # n
             target=t.scan_compliance,
             unit="ratio",
         ),
-        "stow_wip_compliance": Metric(
-            key="stow_wip_compliance",
-            value=_ratio(sum(twin._wip_samples), len(twin._wip_samples)),
-            target=c.stow.wip_compliance_target,
-            unit="ratio",
-        ),
-        "induct_fph": Metric(
-            key="induct_fph",
-            value=induct_fph,
-            target=twin.total_lines() * c.induct.rate_pph_per_line,
-            unit="per_hour",
-        ),
+        **{
+            key: Metric(
+                key=key,
+                value=m2[key]["value"],
+                target=m2[key]["target"],
+                target_max=m2[key].get("target_max"),
+                unit=engine.SPECS[key]["unit"],
+                inputs=m2[key]["inputs"],
+            )
+            for key in engine.SPECS
+        },
         "stow_pph": Metric(
             key="stow_pph",
             value=stowed_hour / stowers if stowers else None,
             target=c.stow.rate_pph_per_stower,
             unit="per_hour",
-        ),
-        "lost_hours": Metric(
-            key="lost_hours", value=round(lost_s / 3600, 2), target=0, unit="hours"
-        ),
-        "induct_downtime_dpmo": Metric(
-            key="induct_downtime_dpmo",
-            value=round(lost_pkgs / max(1.0, k["inducted"] + lost_pkgs) * 1e6),
-            target=None,
-            unit="dpmo",
         ),
         "hv_custody_compliance": Metric(
             key="hv_custody_compliance",
@@ -453,6 +488,8 @@ def build_snapshot(twin: StationOpsTwin, frame: int) -> StationOpsSnapshot:  # n
 
     if twin.day_complete:
         phase = "complete"
+    elif twin.done and not twin.closeout.complete:
+        phase = "closeout"
     elif twin.done:
         phase = "on_road"
     elif now_min < c.induct.start_minute:
@@ -575,6 +612,10 @@ def build_snapshot(twin: StationOpsTwin, frame: int) -> StationOpsSnapshot:  # n
             "no_read_rate": _ratio(k["no_read"], k["induct_attempts"]),
             "multi_read_rate": _ratio(k["multi_read"], k["induct_attempts"]),
             "fph_last_hour": induct_fph,
+            "fph_target": m2["induct_fph"]["target"],
+            "quality_by_line": m2["quality"]["inputs"]["by_line"],
+            "top_quality_issue": m2["quality"]["inputs"]["top_impact"],
+            "noncon_queue": len(twin.noncon_q),
             "queue": len(twin.induct_q),
             "problem_queue": len(twin.problem_q),
         },
@@ -583,10 +624,13 @@ def build_snapshot(twin: StationOpsTwin, frame: int) -> StationOpsSnapshot:  # n
             "stowers": stowers,
             "planned_stowers": c.stow.stowers,
             "stowed": k["stowed"],
-            "wip_packages": len(twin.stow_q),
+            "wip_packages": twin.inc_pending_stow(),
             "wip_minutes": round(twin.wip_minutes(), 1),
-            "wip_target_min": c.stow.wip_target_min,
-            "wip_target_max": c.stow.wip_target_max,
+            "wip_target_min": c.settings.stow_wip_lower_min,
+            "wip_target_max": c.settings.stow_wip_upper_min,
+            "stow_fph": m2["stow_fph"]["value"],
+            "stow_fph_target": m2["stow_fph"]["target"],
+            "buffered": twin.n_buffered,
         },
         outbound={
             "routes_total": len(twin.routes),

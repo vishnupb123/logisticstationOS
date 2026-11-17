@@ -12,7 +12,11 @@ def test_presets_and_metric_definitions(client):
     names = {p["name"] for p in client.get("/station-ops/presets").json()}
     assert {"normal_day", "ferry_disruption", "peak_volume"} <= names
     defs = client.get("/station-ops/metric-definitions").json()
-    assert all(m["status"] == "proposed" for m in defs["metrics"].values())
+    statuses = {m["status"] for m in defs["metrics"].values()}
+    assert statuses <= {"proposed", "documented", "observed"}
+    # v2: the owner-documented definitions are labelled as such (ADR-0014)
+    assert defs["metrics"]["stow_wip_minutes"]["status"] == "documented"
+    assert defs["metrics"]["dea"]["status"] == "proposed"
 
 
 def test_run_day_and_policy_bounds(client):
@@ -23,7 +27,7 @@ def test_run_day_and_policy_bounds(client):
         "/station-ops/run-day",
         json={
             "preset": "induct_line_outage",
-            "interventions": [{"kind": "open_induct_line", "amount": 1, "at_minute": 120}],
+            "interventions": [{"kind": "open_induct_line", "amount": 1, "at_minute": 215}],
         },
     )
     assert r.json()["metrics"]["dea"]["value"] > base

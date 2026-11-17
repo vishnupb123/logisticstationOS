@@ -14,7 +14,11 @@ export interface Metric {
   key: string;
   value: number | null;
   target: number | null;
-  unit: "ratio" | "count" | "per_hour" | "minutes" | "hours";
+  unit: "ratio" | "count" | "per_hour" | "minutes" | "hours" | "dpmo";
+  /** Upper threshold for banded metrics (Stow WIP), v2. */
+  target_max?: number | null;
+  /** Inputs of the calculation, for the "How this is calculated" drawer (v2). */
+  inputs?: Record<string, unknown>;
 }
 
 export interface Trip {

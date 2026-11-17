@@ -98,6 +98,11 @@ extend-immutable-calls = ["fastapi.Depends"]
 "alembic/versions/*.py" = ["E501"]
 # User-facing chat replies are long sentences; splitting them hurts readability.
 "app/runtime/chat.py" = ["E501"]
+"app/runtime/explain.py" = ["E501"]
+"app/runtime/knowledge.py" = ["E501"]
+"app/runtime/explain_v2.py" = ["E501"]
+"app/simulation/station_ops/views_v2.py" = ["E501"]
+"tests/runtime/assistant_eval/*.py" = ["E501"]
 # conftest must redirect POSTGRES_DB to the isolated test database
 # *before* any app module (Settings, engine) is imported.
 "tests/conftest.py" = ["E402"]

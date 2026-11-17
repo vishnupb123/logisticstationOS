@@ -4,6 +4,7 @@
 // key, so all mounted pages share one request and stay in lockstep.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./client";
+import type { ViewsV2 } from "./runtimeV2";
 import type { AgentAction, Metric, Risk } from "./stationOps";
 
 export type Mode = "observe" | "advise" | "autopilot";
@@ -22,6 +23,11 @@ export interface SessionInfo {
   created_at: string;
   source: string;
   default?: boolean;
+  day: number;
+  truckfile_version: number | null;
+  next_day_ready: boolean;
+  scale?: number;
+  pitch?: boolean;
 }
 
 export interface Trip {
@@ -82,7 +88,7 @@ export interface RouteRow {
 export interface Snapshot {
   minute: number;
   clock: string;
-  phase: "pre_shift" | "inbound_induct_stow" | "pick_stage" | "depart" | "on_road" | "complete";
+  phase: "pre_shift" | "inbound_induct_stow" | "pick_stage" | "depart" | "closeout" | "on_road" | "complete";
   done: boolean;
   day_complete: boolean;
   scenario: string;
@@ -202,6 +208,228 @@ export interface DriverRow {
   x: number;
   y: number;
   sector: string;
+  vsa: string | null;
+  vsa_defect: string | null;
+  van_request: string | null;
+  van_eta: string | null;
+}
+
+export interface Notification {
+  id: number;
+  minute: number;
+  clock: string;
+  audience: "supervisor" | "manager" | "dsp" | "driver";
+  kind: string;
+  severity: "info" | "warning" | "critical";
+  title: string;
+  message: string;
+  ack: boolean;
+  acked_at: string | null;
+  route_id?: string;
+  aisle?: string;
+  dsp?: string;
+}
+
+export interface YardRow {
+  driver_id: string;
+  dsp: string;
+  route_id: string;
+  checked_in: string | null;
+  state: string;
+  result: string | null;
+  defect: string | null;
+  wait_minutes: number;
+  audited_at: string | null;
+  van_request: string | null;
+  van_eta: string | null;
+  grounded_for: number | null;
+}
+
+export interface StagingLoc {
+  location: string;
+  row: string;
+  slot: number;
+  route_id: string;
+  wave: number;
+  dsp: string;
+  status: RouteRow["status"];
+  carts: number;
+  carts_staged: number;
+  hv_pending: number;
+  stage_by: string;
+  depart: string;
+  driver: string | null;
+  driver_state: string | null;
+  foreign_cart: string | null;
+  misstaged_at: string | null;
+  risk: string | null;
+}
+
+export interface AisleCell {
+  aisle: string;
+  cluster: string;
+  index: number;
+  level: number;
+  capacity: number;
+  routes: { route_id: string; status: string; wave: number }[];
+  picked: number;
+  people: { login: string; task: string; role: string }[];
+  sweep: "sweeping" | "due" | "swept" | null;
+  swept_at: string | null;
+  flagged_left_behind: number;
+  left_behind_true: number;
+}
+
+export interface CloseoutTask {
+  id: number;
+  owner: "supervisor" | "manager";
+  kind: string;
+  title: string;
+  minutes: number;
+  priority: number;
+  status: "queued" | "in_progress" | "done";
+  created_clock: string;
+  finished_clock?: string;
+  started: number | null;
+  result: string | null;
+}
+
+export interface Gtdr {
+  gtdr_id: string;
+  direction: "inbound_late" | "outbound_pallet";
+  trailer: string;
+  place: string;
+  scheduled: string;
+  actual: string;
+  delay_minutes: number;
+  door: number | null;
+  units: number;
+  pallets: number;
+  reason: string;
+  seal: string;
+  status: "open" | "drafted" | "filed";
+  opened_clock: string;
+  filed_clock: string | null;
+}
+
+export interface NeedsPlan {
+  routes: number;
+  spr: number;
+  tph: number;
+  by_role: Record<string, number>;
+  headcount: number;
+  labor_hours: number;
+}
+
+export interface Closeout {
+  started: boolean;
+  started_at: string | null;
+  complete: boolean;
+  tomorrow: string;
+  now: string;
+  tasks: CloseoutTask[];
+  gtdr: Gtdr[];
+  truckfile: {
+    version: number;
+    final_published_at: string | null;
+    final_due: string;
+    trips: {
+      trip_id: string;
+      origin: string;
+      via_ferry: boolean;
+      sailing: string | null;
+      planned_arrival: string;
+      eta: string;
+      delay_minutes: number;
+      volume: number;
+      cancelled: boolean;
+      added: boolean;
+      last_checked: string | null;
+      after_pick_start: boolean;
+    }[];
+    log: {
+      clock: string;
+      trip_id: string;
+      field: string;
+      before: number | boolean;
+      after: number | boolean;
+      why: string;
+      how: string;
+      after_final: boolean;
+      version: number;
+    }[];
+    ferry_checks: { clock: string; changes: number }[];
+  };
+  ofd: Record<string, number> | null;
+  needs: NeedsPlan | null;
+  show: Record<string, number> | null;
+  gap: number | null;
+  offers: {
+    login: string;
+    type: "vet" | "vto";
+    offered_clock: string;
+    status: "pending" | "accepted" | "declined";
+    responded_clock: string | null;
+    source: string;
+  }[];
+  callouts: { clock: string; login: string }[];
+  plan:
+    | (Record<string, unknown> & {
+        version: number;
+        clock: string;
+        truckfile_version: number;
+        needs: NeedsPlan;
+        show: Record<string, number>;
+        ofd: Record<string, number>;
+        gap: number;
+        aisles: { aisle: string; volume: number; routes: number }[];
+        zones: { zone: string; aisles: string; volume: number }[];
+        assignments: {
+          role: string;
+          where: string;
+          login: string | null;
+          ok: boolean;
+          vet?: boolean;
+          history?: string[];
+          note: string;
+        }[];
+        rotation_violations: number;
+        rotation_compliance: number;
+      })
+    | null;
+  plan_history: {
+    version: number;
+    clock: string;
+    label: string;
+    truckfile_version: number;
+    ofd_volume: number;
+    headcount_needed: number;
+    expected: number;
+    gap: number;
+  }[];
+  scrubs: Record<string, Record<string, string | number>>;
+  readiness: Record<string, number | boolean | null> | null;
+}
+
+export interface CityMap {
+  extent_km: number;
+  roads: { kind: "highway" | "ring" | "street"; points: [number, number][]; bridge?: boolean }[];
+  river: [number, number][];
+  bridges: [number, number][];
+  neighbourhoods: { name: string; x: number; y: number }[];
+  parks: { x: number; y: number; r: number }[];
+  zones: { route_id: string; x: number; y: number }[];
+}
+
+export interface DriverPath {
+  driver_id: string;
+  route_id: string;
+  state: string;
+  to_station: [number, number][];
+  out: [number, number][];
+  tour: [number, number][];
+  back: [number, number][];
+  stops_done_display: number;
 }
 
 export interface DspRow {
@@ -349,11 +577,49 @@ export interface Views {
     scanners: { device: string; read_rate: number; status: string }[];
   };
   events: { clock: string; kind: string; message: string; source?: string }[];
+  yard: {
+    marshals: number;
+    extra_marshals: number;
+    queue: number;
+    booked_ahead_minutes: number;
+    audited: number;
+    passed: number;
+    minor_fixed: number;
+    grounded: number;
+    grounded_now: number;
+    spare_vans: Record<string, number>;
+    rows: YardRow[];
+  };
+  staging_floor: {
+    rows: string[];
+    slots: number;
+    locations: StagingLoc[];
+    waves: { wave: number; stage_by: string; routes: number; staged: number; departed: number; at_risk: number }[];
+    risks: Record<string, number>;
+  };
+  aisle_plan: {
+    aisles: AisleCell[];
+    clusters: string[];
+    sweep_log: {
+      clock: string;
+      aisle: string;
+      route_id: string;
+      packages: number;
+      reasons: string[];
+      outcome: "staged" | "cluster_transfer";
+      by: string;
+    }[];
+    swept: number;
+    sweep_recovered: number;
+    cluster_transfer: number;
+  };
+  notifications: { items: Notification[]; unacked: Record<string, number>; critical_unacked: number };
+  closeout: Closeout;
 }
 
 export interface LiveState {
   snapshot: Snapshot;
-  views: Views;
+  views: Views & ViewsV2;
   session: SessionInfo;
   agents: {
     mode: Mode;
@@ -372,12 +638,34 @@ export interface StationAction {
   source?: string;
 }
 
+export interface ChatSource {
+  kind: string;
+  title: string;
+  clock?: string | null;
+}
+
 export interface ChatReply {
   reply: string;
   intent: string;
   actions: Record<string, unknown>[];
   data: Record<string, unknown>;
   understood_by: "rules" | "llm" | "none";
+  title?: string | null;
+  sections?: { title: string; lines: string[] }[];
+  sources?: ChatSource[];
+  llm_summary?: string | null;
+  llm_status?: "grounded" | "withheld" | "unavailable" | "skipped";
+}
+
+export interface ChatTurn {
+  role: "user" | "assistant";
+  text: string;
+  intent?: string;
+  title?: string | null;
+  sections?: { title: string; lines: string[] }[];
+  sources?: ChatSource[];
+  llm_summary?: string | null;
+  llm_status?: string;
 }
 
 const SID = "default";
@@ -385,7 +673,7 @@ const SID = "default";
 export const runtimeApi = {
   state: () => api.get<LiveState>(`/runtime/sessions/${SID}/state`),
   sessions: () => api.get<SessionInfo[]>("/runtime/sessions"),
-  create: (body: { preset: string; seed?: number | null; mode: Mode; speed: number; source?: string; ofd_date?: string }) =>
+  create: (body: { preset?: string; seed?: number | null; mode: Mode; speed: number; source?: string; ofd_date?: string; scale?: number }) =>
     api.post<SessionInfo>("/runtime/sessions", body),
   control: (body: { paused?: boolean; speed?: number; mode?: Mode }) =>
     api.post<SessionInfo>(`/runtime/sessions/${SID}/control`, body),
@@ -398,8 +686,11 @@ export const runtimeApi = {
   decide: (id: number, verb: "approve" | "dismiss") =>
     api.post<unknown>(`/runtime/sessions/${SID}/recommendations/${id}/${verb}`),
   chat: (message: string) => api.post<ChatReply>(`/runtime/sessions/${SID}/chat`, { message }),
-  chatHistory: () =>
-    api.get<{ role: "user" | "assistant"; text: string; intent?: string }[]>(`/runtime/sessions/${SID}/chat`),
+  chatHistory: () => api.get<ChatTurn[]>(`/runtime/sessions/${SID}/chat`),
+  map: () => api.get<CityMap>(`/runtime/sessions/${SID}/map`),
+  driverPath: (id: string) => api.get<DriverPath>(`/runtime/sessions/${SID}/drivers/${encodeURIComponent(id)}/path`),
+  ack: (id: number) => api.post<Notification>(`/runtime/sessions/${SID}/notifications/${id}/ack`),
+  ackAll: (audience: string) => api.post<{ acked: number }>(`/runtime/sessions/${SID}/notifications/ack-all`, { audience }),
   search: (q: string) =>
     api.get<{ kind: string; results: Record<string, unknown>[] }>(
       `/runtime/sessions/${SID}/search?q=${encodeURIComponent(q)}`,

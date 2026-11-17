@@ -251,3 +251,18 @@ tr.row-risk td {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.perf-card__label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.perf-card__value--target {
+  color: var(--text-secondary);
+}
+
+.perf-status {
+  align-self: flex-start;
+  font-size: 11px;
+}

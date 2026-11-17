@@ -79,3 +79,30 @@ Update the row's status and leaning in this file, and if the resolution is a sig
 | What should the plan-scoring weights be (ΔDEA ×1, ΔOTD ×0.5, ΔTimely staged ×0.25, −0.02/labor-hour)? | They decide what the agent recommends | Proposed, versioned (`SCORE_VERSION`), stamped into every decision record | `unresolved` |
 | Real ferry/operator status feed for the truckfile refresh | The daily job currently uses a seeded synthetic provider | Implement a `FerryStatusProvider` adapter against an operator's published feed/API within its terms — never scraping, never in this public repo with real data | `unresolved` |
 | Should advise-mode recommendations from the *live stream* be sendable to the approval queue directly? | Today only a persisted investigation (`POST /agents/station-ops/run`) creates decision records | Leaning yes, via the same `propose_from_action`, once there's a reason to prefer it over a persisted run | `leaning` |
+| What exactly is on a GTDR (Global Trailer Dock and Release — confirmed by the owner 2026-11-12), and when is one required? | The close-out models it as the supervisor's record of an irregular trailer (late inbound, outbound pallet truck released) | Meaning confirmed; field set is still proposed (`closeout.py::_new_gtdr`) | `leaning` |
+| VET/VTO acceptance behaviour (VET 50% × lead-time factor, VTO 65%, ~60-min response) | Drives how early the planner must offer VET | Proposed assumptions in `CloseoutConfig`; associates choose in the sim, nothing is decided for them | `unresolved` |
+| VSA defect rates (5% fixed on site, 2% grounded), wrong-staging-scan rate (5%/route), forgotten-bag rate (5%/route) | They shape OTD/DEA and the floor/yard agents' value | Proposed `config.py` defaults; tune with real distributions if ever available | `unresolved` |
+| Job-rotation rule (≤2 consecutive days in the same role) | The next-day assignment enforces it | Proposed `CloseoutConfig.max_consecutive_same_role`; real rules vary by site and role | `unresolved` |
+
+## StationOS v2 (2026-11-13, ADR-0014/0015/0016, HANDOFF_V2 §16)
+
+Answers move an item from `observed`/`proposed` to `documented`; record the date.
+
+| # | Question | Current assumption | Status |
+|---|---|---|---|
+| Q1 | Is a shadow evaluation on real (exported, never committed) data ever in scope? | No — synthetic only; needs ADR-0017 first | Open |
+| Q2 | Non-identifying scale ranges for presets (packages/cycle, routes, associates, lines/fingers) | 12k normal day; `scale` up to 3× | Open |
+| Q3 | Which 5 metrics define pilot success? | DEA, OTD, Stow WIP compliance, staffing gap, expired work items | Open |
+| Q4 | What do the SWA and OTR labour groups do? | OTR = outbound/yard support 08:00–13:30; SWA not simulated (0) | Open |
+| Q5 | The indirect allowance behind "TPH with/without 5s" | 8% (`SettingsConfig.indirect_allowance`) | Open |
+| Q6 | Meaning of the "XPT" leg and the unexplained held sub-reason | Not modelled | Open |
+| Q7 | Are belt gaps ≥120 s counted as downtime stops? | No — only 20–120 s gaps (documented rule taken literally) | Open |
+| Q8 | Downtime DPMO inclusions (low-volume operators, induct-code family) | Not applied | Open |
+| Q9 | VET/VTO acceptance rule and typical sign-up window length | Rotation-aware acceptance; 180-min window; submit rate 45%/60% × lead factor | Open |
+| Q10 | What makes a path "disallowed"; what drives High vs. Low rotation priority? | Heavy path on ≥2 of last 3 days; High = 3 heavy/same days | Open |
+| Q11 | Should the pre-shift plan re-plan automatically from call-outs? | Shown on request (Shift Plan → Pre-Shift) | Open |
+| Q12 | Network goal for Est. Stow WIP Compliance | 70% | Open |
+| Q13 | Should next-day pick be modelled? | Work group exists in the plan; not simulated | Open |
+| Q14 | Is the stow target per hour station-level or per stower? | Stow FPH station-level (documented target formula); PPH per stower 220 (proposed) | Open |
+| — | Stow buffer (container fill + transport) 10–24 min; stow drain 30 min after pick start | Proposed; calibrates a healthy WIP to the documented 15–30 min band | Open |
+| — | Work-item SLA minutes and category mapping | Proposed (`work_items.KIND_MAP`) | Open |
